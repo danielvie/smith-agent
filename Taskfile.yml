@@ -1,0 +1,29 @@
+version: '3'
+
+tasks:
+  default:
+    desc: List available tasks
+    cmds:
+      - task --list
+    silent: true
+
+  run:
+    desc: Run the Smith Agent CLI in the current directory
+    interactive: true
+    cmds:
+      - cargo run --quiet
+
+  test:
+    desc: Run all automated tests
+    cmds:
+      - cargo test
+
+  check:
+    desc: Type-check all targets
+    cmds:
+      - cargo check --all-targets
+
+  clean:
+    desc: Remove build artifacts
+    cmds:
+      - cargo clean
