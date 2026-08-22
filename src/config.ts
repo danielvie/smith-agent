@@ -4,6 +4,7 @@ export const DEFAULT_CONFIG_PATH = "smith.config.json";
 
 export interface SmithConfig {
   model?: string;
+  chromeDevtools?: boolean;
 }
 
 export class ConfigError extends Error {
@@ -30,10 +31,15 @@ export async function loadSmithConfig(workspace: Workspace, relativePath = DEFAU
   }
 
   if (!isRecord(parsed)) throw new ConfigError(`${relativePath} must contain a JSON object.`);
-  if (parsed.model === undefined) return {};
-  if (typeof parsed.model !== "string" || !parsed.model.trim()) {
+  if (parsed.model !== undefined && (typeof parsed.model !== "string" || !parsed.model.trim())) {
     throw new ConfigError(`${relativePath}.model must be a non-empty string.`);
   }
+  if (parsed.chromeDevtools !== undefined && typeof parsed.chromeDevtools !== "boolean") {
+    throw new ConfigError(`${relativePath}.chromeDevtools must be a boolean.`);
+  }
 
-  return { model: parsed.model.trim() };
+  return {
+    ...(parsed.model === undefined ? {} : { model: parsed.model.trim() }),
+    ...(parsed.chromeDevtools === undefined ? {} : { chromeDevtools: parsed.chromeDevtools }),
+  };
 }

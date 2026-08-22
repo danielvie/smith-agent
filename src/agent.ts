@@ -1,8 +1,12 @@
+import { randomUUID } from "node:crypto";
 import { Agent, type AgentEvent, type AgentTool, type AgentToolResult } from "@earendil-works/pi-agent-core";
 import { createModels, Type, type Static } from "@earendil-works/pi-ai";
 import { fireworksProvider } from "@earendil-works/pi-ai/providers/fireworks";
 import type { BeforeToolCallContext } from "@earendil-works/pi-agent-core";
-import { MAX_COMMAND_TIMEOUT_MS, type Workspace, type WorkspaceEntry } from "./workspace";
+import type { ApprovalHandler, ApprovalKind, ApprovalRequest, SmithEvent } from "./protocol";
+import { DEFAULT_MAX_SEARCH_MATCHES, MAX_COMMAND_TIMEOUT_MS, type SearchResult, type Workspace, type WorkspaceEntry } from "./workspace";
+
+export type { ApprovalHandler, ApprovalRequest, SmithEvent } from "./protocol";
 
 const DEFAULT_MODEL_ID = "accounts/fireworks/models/kimi-k2p6";
 const PROTECTED_TOOLS = new Map<string, ApprovalKind>([
@@ -10,25 +14,6 @@ const PROTECTED_TOOLS = new Map<string, ApprovalKind>([
   ["edit_file", "write"],
   ["run_command", "shell"],
 ]);
-
-type ApprovalKind = "write" | "shell";
-
-export interface ApprovalRequest {
-  kind: ApprovalKind;
-  toolName: string;
-  args: Record<string, unknown>;
-}
-
-export type ApprovalHandler = (request: ApprovalRequest, signal?: AbortSignal) => Promise<boolean>;
-
-export type SmithEvent =
-  | { type: "status"; status: "started" | "turn_started" | "completed" }
-  | { type: "text_delta"; delta: string }
-  | { type: "thinking_delta"; delta: string }
-  | { type: "tool_start"; toolCallId: string; toolName: string; args: unknown }
-  | { type: "tool_update"; toolCallId: string; toolName: string; partialResult: unknown }
-  | { type: "tool_end"; toolCallId: string; toolName: string; result: unknown; isError: boolean }
-  | { type: "error"; message: string };
 
 export type SmithEventListener = (event: SmithEvent) => void;
 
@@ -63,6 +48,17 @@ const readFileParameters = Type.Object({
   path: Type.String({ description: "File path relative to the workspace root." }),
 });
 type ReadFileParameters = Static<typeof readFileParameters>;
+
+const searchParameters = Type.Object({
+  pattern: Type.String({ description: "Search pattern as a regular expression, unless literal is true." }),
+  path: Type.Optional(Type.String({ description: "File or directory relative to the workspace root. Defaults to ." })),
+  glob: Type.Optional(Type.String({ description: "Filter files by glob, for example **/*.ts." })),
+  ignoreCase: Type.Optional(Type.Boolean({ description: "Search without regard to letter case." })),
+  literal: Type.Optional(Type.Boolean({ description: "Treat pattern as literal text instead of a regular expression." })),
+  context: Type.Optional(Type.Integer({ minimum: 0, maximum: 10, description: "Number of surrounding lines to include." })),
+  limit: Type.Optional(Type.Integer({ minimum: 1, maximum: DEFAULT_MAX_SEARCH_MATCHES, description: "Maximum number of matches." })),
+});
+type SearchParameters = Static<typeof searchParameters>;
 
 const writeFileParameters = Type.Object({
   path: Type.String({ description: "File path relative to the workspace root." }),
@@ -106,6 +102,16 @@ export function createWorkspaceTools(workspace: Workspace): AgentTool[] {
     },
   };
 
+  const searchTool: AgentTool<typeof searchParameters, SearchResult> = {
+    name: "search",
+    label: "Search files",
+    description: "Search bounded UTF-8 workspace files and return matching paths, line numbers, and optional context. Supports regular expressions, literal text, globs, case-insensitive search, and bounded results.",
+    parameters: searchParameters,
+    async execute(_toolCallId, params: SearchParameters, signal) {
+      return toolResult(await workspace.search({ ...params, signal }));
+    },
+  };
+
   const writeFileTool: AgentTool<typeof writeFileParameters, { path: string; bytes: number; content: string }> = {
     name: "write_file",
     label: "Write file",
@@ -136,7 +142,7 @@ export function createWorkspaceTools(workspace: Workspace): AgentTool[] {
     },
   };
 
-  return [listFilesTool, readFileTool, writeFileTool, editFileTool, runCommandTool];
+  return [listFilesTool, readFileTool, searchTool, writeFileTool, editFileTool, runCommandTool];
 }
 
 export function mapPiEvent(event: AgentEvent): SmithEvent[] {
@@ -155,6 +161,11 @@ export function mapPiEvent(event: AgentEvent): SmithEvent[] {
         return [{ type: "thinking_delta", delta: event.assistantMessageEvent.delta }];
       }
       return [];
+    case "message_end":
+      if (event.message.role === "assistant" && (event.message.stopReason === "error" || event.message.stopReason === "aborted")) {
+        return [{ type: "error", message: event.message.errorMessage ?? `Model request ${event.message.stopReason}.` }];
+      }
+      return [];
     case "tool_execution_start":
       return [{ type: "tool_start", toolCallId: event.toolCallId, toolName: event.toolName, args: event.args }];
     case "tool_execution_update":
@@ -171,6 +182,8 @@ export interface SmithAgentOptions {
   modelId?: string;
   apiKey?: string;
   approve?: ApprovalHandler;
+  extraTools?: AgentTool[];
+  protectedToolKinds?: ReadonlyMap<string, ApprovalKind>;
 }
 
 export class SmithAgentSession {
@@ -202,7 +215,9 @@ export class SmithAgentSession {
     const model = models.getModel("fireworks", modelId);
     if (!model) throw new AgentConfigurationError(`Fireworks model not found: ${modelId}.`);
 
-    const tools = createWorkspaceTools(options.workspace);
+    const tools = [...createWorkspaceTools(options.workspace), ...(options.extraTools ?? [])];
+    const protectedToolKinds = new Map(PROTECTED_TOOLS);
+    for (const [toolName, kind] of options.protectedToolKinds ?? []) protectedToolKinds.set(toolName, kind);
     const approve = options.approve ?? (async () => false);
     const agent = new Agent({
       initialState: {
@@ -210,8 +225,10 @@ export class SmithAgentSession {
           "You are Smith Agent, a local assistant for simple project automation.",
           `The workspace root is ${options.workspace.root}.`,
           "Use the workspace tools instead of inventing file contents or command output.",
+          "Use search when locating code or text. When Chrome DevTools tools are available, use them for requested web research rather than claiming to browse.",
           "Paths passed to tools must be relative to the workspace root.",
           "Explain what you changed and report command results accurately.",
+          "Use Markdown and LaTeX when they improve the answer. In browser mode, use fenced chart blocks with JSON ECharts options when a chart helps."
         ].join("\n"),
         model,
         tools,
@@ -219,7 +236,7 @@ export class SmithAgentSession {
       streamFn: models.streamSimple.bind(models),
       getApiKey: () => apiKey,
       toolExecution: "sequential",
-      beforeToolCall: async (context, signal) => checkApproval(context, approve, signal),
+      beforeToolCall: async (context, signal) => checkApproval(context, approve, protectedToolKinds, signal),
     });
 
     return new SmithAgentSession({ ...options, modelId }, agent);
@@ -238,22 +255,20 @@ export class SmithAgentSession {
     this.agent.steer({ role: "user", content: input, timestamp: Date.now() });
   }
 
-  followUp(input: string): void {
-    this.agent.followUp({ role: "user", content: input, timestamp: Date.now() });
-  }
 
   abort(): void {
     this.agent.abort();
   }
 }
 
-async function checkApproval(context: BeforeToolCallContext, approve: ApprovalHandler, signal?: AbortSignal) {
-  const kind = PROTECTED_TOOLS.get(context.toolCall.name);
+async function checkApproval(context: BeforeToolCallContext, approve: ApprovalHandler, protectedToolKinds: ReadonlyMap<string, ApprovalKind>, signal?: AbortSignal) {
+  const kind = protectedToolKinds.get(context.toolCall.name);
   if (!kind) return undefined;
 
   const args = context.args && typeof context.args === "object" ? context.args as Record<string, unknown> : {};
+  const request: ApprovalRequest = { id: randomUUID(), kind, toolName: context.toolCall.name, args };
   try {
-    if (await approve({ kind, toolName: context.toolCall.name, args }, signal)) return undefined;
+    if (await approve(request, signal)) return undefined;
     return { block: true, terminate: true, reason: "Approval denied by the user." };
   } catch (error) {
     return { block: true, terminate: true, reason: `Approval failed: ${errorMessage(error)}` };

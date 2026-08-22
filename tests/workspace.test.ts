@@ -38,6 +38,26 @@ describe("workspace boundary", () => {
     expect(result.bytes).toBeGreaterThan(0);
   });
 
+  test("searches bounded text with Pi-style filters and context", async () => {
+    const { workspace } = await makeWorkspace();
+    await mkdir(join(workspace.root, "nested"));
+    await workspace.writeFile("nested/notes.ts", "zero\nNeedle here\nthree\n");
+    await workspace.writeFile("nested/notes.txt", "Needle ignored\n");
+
+    await expect(workspace.search({ pattern: "needle", glob: "**/*.ts", ignoreCase: true, context: 1 })).resolves.toMatchObject({
+      matches: [{
+        path: "nested/notes.ts",
+        line: 2,
+        text: "Needle here",
+        before: [{ line: 1, text: "zero" }],
+        after: [{ line: 3, text: "three" }],
+      }],
+      matchLimitReached: false,
+      outputTruncated: false,
+    });
+    await expect(workspace.search({ pattern: "needle", path: "../outside" })).rejects.toThrow("Parent path segments");
+  });
+
   test("does not follow a directory symlink outside the workspace", async () => {
     const { workspace, directory } = await makeWorkspace();
     const outside = await mkdtemp(join(tmpdir(), "smith-outside-"));

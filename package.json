@@ -6,16 +6,29 @@
   "description": "Windows-first POC for a local assistant agent",
   "scripts": {
     "run": "bun run src/cli.ts",
+    "ui": "bun run src/cli.ts --ui",
     "test": "bun test",
     "check": "tsc --noEmit",
-    "build:windows": "bun build --compile --target=bun-windows-x64 src/cli.ts --outfile dist/smith-windows-x64.exe"
+    "build:windows": "bun build --compile --target=bun-windows-x64 src/cli.ts --outfile dist/smith-windows-x64.exe",
+    "ui:prototype": "bun run src/web/prototype/serve.ts",
+    "ui:verify": "bun run src/web/prototype/verify.ts"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "0.84.2",
-    "@earendil-works/pi-ai": "0.84.2"
+    "@earendil-works/pi-ai": "0.84.2",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "dompurify": "^3.4.14",
+    "echarts": "^6.1.0",
+    "katex": "^0.18.4",
+    "marked": "^18.0.10",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
   },
   "devDependencies": {
     "@types/bun": "^1.4.0",
+    "@types/dompurify": "^3.2.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
     "typescript": "^7.0.2"
   }
 }

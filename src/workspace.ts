@@ -40,6 +40,44 @@ export interface CommandResult {
   stderrTruncated: boolean;
 }
 
+export const DEFAULT_MAX_SEARCH_MATCHES = 100;
+
+export interface SearchOptions {
+  pattern: string;
+  path?: string;
+  glob?: string;
+  ignoreCase?: boolean;
+  literal?: boolean;
+  context?: number;
+  limit?: number;
+  signal?: AbortSignal;
+}
+
+export interface SearchContextLine {
+  line: number;
+  text: string;
+}
+
+export interface SearchMatch {
+  path: string;
+  line: number;
+  text: string;
+  before?: SearchContextLine[];
+  after?: SearchContextLine[];
+}
+
+export interface SearchResult {
+  matches: SearchMatch[];
+  matchLimitReached: boolean;
+  outputTruncated: boolean;
+  filesSkipped: number;
+}
+
+const MAX_SEARCH_MATCHES = 1_000;
+const MAX_SEARCH_CONTEXT_LINES = 10;
+const MAX_SEARCH_LINE_CHARS = 2_000;
+const MAX_SEARCH_RESULT_BYTES = 128 * 1024;
+const IGNORED_SEARCH_DIRECTORIES = new Set([".git", "node_modules"]);
 function isAnyAbsolutePath(value: string): boolean {
   return isAbsolute(value) || win32.isAbsolute(value) || posix.isAbsolute(value);
 }
@@ -55,6 +93,53 @@ function isWithin(root: string, candidate: string): boolean {
 
 function byteLength(value: string): number {
   return new TextEncoder().encode(value).byteLength;
+}
+
+const PATH_SEPARATOR = String.fromCharCode(92);
+const REGEXP_SPECIAL_CHARACTERS = `${PATH_SEPARATOR}^$.*+?()[]{}|`;
+
+function escapeRegExp(value: string): string {
+  return [...value].map((character) => REGEXP_SPECIAL_CHARACTERS.includes(character) ? `${PATH_SEPARATOR}${character}` : character).join("");
+}
+
+function globRegExp(pattern: string): RegExp {
+  const normalized = pattern.split(PATH_SEPARATOR).join("/");
+  let expression = "^";
+  for (let index = 0; index < normalized.length; index += 1) {
+    const character = normalized[index];
+    if (character === "*" && normalized[index + 1] === "*") {
+      index += 1;
+      if (normalized[index + 1] === "/") {
+        index += 1;
+        expression += "(?:.*/)?";
+      } else {
+        expression += ".*";
+      }
+      continue;
+    }
+    if (character === "*") {
+      expression += "[^/]*";
+      continue;
+    }
+    if (character === "?") {
+      expression += "[^/]";
+      continue;
+    }
+    expression += escapeRegExp(character);
+  }
+  return new RegExp(`${expression}$`, "u");
+}
+
+function matchesGlob(relativePath: string, pattern: string | undefined): boolean {
+  if (!pattern) return true;
+  const matcher = globRegExp(pattern);
+  const normalizedPath = relativePath.split(PATH_SEPARATOR).join("/");
+  const fileName = normalizedPath.slice(normalizedPath.lastIndexOf("/") + 1);
+  return matcher.test(normalizedPath) || matcher.test(fileName);
+}
+
+function truncateSearchLine(value: string): string {
+  return value.length > MAX_SEARCH_LINE_CHARS ? `${value.slice(0, MAX_SEARCH_LINE_CHARS)}…` : value;
 }
 
 function asWorkspaceError(error: unknown, fallback: string): WorkspaceError {
@@ -133,6 +218,97 @@ export class Workspace {
     } catch (error) {
       throw asWorkspaceError(error, `Could not read ${relativePath}.`);
     }
+  }
+
+  async search(options: SearchOptions): Promise<SearchResult> {
+    if (!options.pattern) throw new WorkspaceError("pattern must not be empty.");
+    if (options.limit !== undefined && (!Number.isInteger(options.limit) || options.limit < 1)) {
+      throw new WorkspaceError("limit must be a positive integer.");
+    }
+    if (options.context !== undefined && (!Number.isInteger(options.context) || options.context < 0)) {
+      throw new WorkspaceError("context must be a non-negative integer.");
+    }
+
+    const expression = options.literal ? escapeRegExp(options.pattern) : options.pattern;
+    let matcher: RegExp;
+    try {
+      matcher = new RegExp(expression, options.ignoreCase ? "iu" : "u");
+    } catch (error) {
+      throw new WorkspaceError(`Invalid search pattern: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    const limit = Math.min(options.limit ?? DEFAULT_MAX_SEARCH_MATCHES, MAX_SEARCH_MATCHES);
+    const context = Math.min(options.context ?? 0, MAX_SEARCH_CONTEXT_LINES);
+    const root = await this.searchablePath(options.path ?? ".");
+    const files = root.isDirectory ? await this.searchFiles(root.path, options.signal) : [root.path];
+    const matches: SearchMatch[] = [];
+    let outputBytes = 0;
+    let matchLimitReached = false;
+    let outputTruncated = false;
+    let filesSkipped = 0;
+
+    searchFiles: for (const filePath of files) {
+      options.signal?.throwIfAborted();
+      const relativePath = relative(this.root, filePath).split(PATH_SEPARATOR).join("/") || ".";
+      if (!matchesGlob(relativePath, options.glob)) continue;
+
+      let content: string;
+      try {
+        const fileInfo = await stat(filePath);
+        if (fileInfo.size > this.maxFileBytes) {
+          filesSkipped += 1;
+          continue;
+        }
+        content = await readFileFromDisk(filePath, "utf8");
+      } catch {
+        filesSkipped += 1;
+        continue;
+      }
+      if (content.includes("\0")) {
+        filesSkipped += 1;
+        continue;
+      }
+
+      const lines = content.replace(/\r\n/gu, "\n").replace(/\r/gu, "\n").split("\n");
+      for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+        options.signal?.throwIfAborted();
+        const line = lines[lineIndex];
+        if (!matcher.test(line)) continue;
+
+        const match: SearchMatch = {
+          path: relativePath,
+          line: lineIndex + 1,
+          text: truncateSearchLine(line),
+        };
+        if (context > 0) {
+          const beforeStart = Math.max(0, lineIndex - context);
+          const before = lines.slice(beforeStart, lineIndex).map((text, offset) => ({
+            line: beforeStart + offset + 1,
+            text: truncateSearchLine(text),
+          }));
+          const after = lines.slice(lineIndex + 1, lineIndex + context + 1).map((text, offset) => ({
+            line: lineIndex + offset + 2,
+            text: truncateSearchLine(text),
+          }));
+          if (before.length > 0) match.before = before;
+          if (after.length > 0) match.after = after;
+        }
+
+        const matchBytes = byteLength(JSON.stringify(match));
+        if (matches.length > 0 && outputBytes + matchBytes > MAX_SEARCH_RESULT_BYTES) {
+          outputTruncated = true;
+          break searchFiles;
+        }
+        matches.push(match);
+        outputBytes += matchBytes;
+        if (matches.length >= limit) {
+          matchLimitReached = true;
+          break searchFiles;
+        }
+      }
+    }
+
+    return { matches, matchLimitReached, outputTruncated, filesSkipped };
   }
 
   async writeFile(relativePath: string, content: string): Promise<WorkspaceFile> {
@@ -226,6 +402,49 @@ export class Workspace {
       clearTimeout(timeout);
       signal?.removeEventListener("abort", onAbort);
     }
+  }
+
+  private async searchablePath(relativePath: string): Promise<{ path: string; isDirectory: boolean }> {
+    const candidate = this.resolvePath(relativePath);
+    let canonicalPath: string;
+    try {
+      canonicalPath = await realpath(candidate);
+    } catch (error) {
+      throw asWorkspaceError(error, `Path does not exist: ${relativePath}.`);
+    }
+
+    if (!isWithin(this.root, canonicalPath)) throw new WorkspaceError("Path resolves outside the workspace.");
+    const pathInfo = await stat(canonicalPath);
+    if (!pathInfo.isFile() && !pathInfo.isDirectory()) throw new WorkspaceError(`${relativePath} is not a searchable file or directory.`);
+    return { path: canonicalPath, isDirectory: pathInfo.isDirectory() };
+  }
+
+  private async searchFiles(directoryPath: string, signal?: AbortSignal): Promise<string[]> {
+    const files: string[] = [];
+    const visit = async (currentPath: string): Promise<void> => {
+      signal?.throwIfAborted();
+      let entries;
+      try {
+        entries = await readdir(currentPath, { withFileTypes: true });
+      } catch (error) {
+        throw asWorkspaceError(error, `Could not list ${relative(this.root, currentPath) || "."}.`);
+      }
+
+      for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+        signal?.throwIfAborted();
+        if (entry.isSymbolicLink()) continue;
+        const childPath = join(currentPath, entry.name);
+        if (entry.isDirectory()) {
+          if (IGNORED_SEARCH_DIRECTORIES.has(entry.name)) continue;
+          await visit(childPath);
+        } else if (entry.isFile()) {
+          files.push(childPath);
+        }
+      }
+    };
+
+    await visit(directoryPath);
+    return files;
   }
 
   private async existingPath(relativePath: string, expected: "file" | "directory"): Promise<string> {

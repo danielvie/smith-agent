@@ -20,12 +20,17 @@ describe("Smith agent adapter", () => {
     await workspace.writeFile("hello.txt", "hello");
 
     const tools = createWorkspaceTools(workspace);
-    expect(tools.map((tool) => tool.name)).toEqual(["list_files", "read_file", "write_file", "edit_file", "run_command"]);
+    expect(tools.map((tool) => tool.name)).toEqual(["list_files", "read_file", "search", "write_file", "edit_file", "run_command"]);
 
     const readTool = tools.find((tool) => tool.name === "read_file");
     if (!readTool) throw new Error("read_file tool was not created");
     const result = await readTool.execute("test-call", { path: "hello.txt" });
     expect((result.details as { content: string }).content).toBe("hello");
+
+    const searchTool = tools.find((tool) => tool.name === "search");
+    if (!searchTool) throw new Error("search tool was not created");
+    const searchResult = await searchTool.execute("test-call", { pattern: "hello" });
+    expect((searchResult.details as { matches: Array<{ path: string; line: number; text: string }> }).matches).toEqual([{ path: "hello.txt", line: 1, text: "hello" }]);
   });
 
   test("maps Pi stream events to app-owned events", () => {
@@ -44,6 +49,15 @@ describe("Smith agent adapter", () => {
     expect(mapPiEvent(toolEvent)).toEqual([
       { type: "tool_start", toolCallId: "call-1", toolName: "read_file", args: { path: "hello.txt" } },
     ]);
+  });
+
+  test("maps provider errors to app-owned errors", () => {
+    const event = {
+      type: "message_end",
+      message: { role: "assistant", stopReason: "error", errorMessage: "provider failed" },
+    } as unknown as AgentEvent;
+
+    expect(mapPiEvent(event)).toEqual([{ type: "error", message: "provider failed" }]);
   });
 
   test("uses the Fireworks environment key and Kimi K2.6 by default", async () => {

@@ -13,6 +13,24 @@ tasks:
     cmds:
       - bun run src/cli.ts
 
+  ui:
+    desc: Start the local browser UI
+    interactive: true
+    cmds:
+      - bun run src/cli.ts --ui
+
+  ui:prototype:
+    desc: Start the throwaway layout prototype (variants A-R, fixture data)
+    interactive: true
+    cmds:
+      - bun run src/web/prototype/serve.ts
+
+  ui:verify:
+    desc: Render the real UI against a scripted event stream (no agent, no API key)
+    interactive: true
+    cmds:
+      - bun run src/web/prototype/verify.ts
+
   test:
     desc: Run the automated tests
     cmds:
