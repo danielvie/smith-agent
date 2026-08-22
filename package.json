@@ -1,0 +1,21 @@
+{
+  "name": "smith-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Windows-first POC for a local assistant agent",
+  "scripts": {
+    "run": "bun run src/cli.ts",
+    "test": "bun test",
+    "check": "tsc --noEmit",
+    "build:windows": "bun build --compile --target=bun-windows-x64 src/cli.ts --outfile dist/smith-windows-x64.exe"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "0.84.2",
+    "@earendil-works/pi-ai": "0.84.2"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.0",
+    "typescript": "^7.0.2"
+  }
+}

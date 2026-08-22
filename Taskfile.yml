@@ -11,19 +11,32 @@ tasks:
     desc: Run the Smith Agent CLI in the current directory
     interactive: true
     cmds:
-      - cargo run --quiet
+      - bun run src/cli.ts
 
   test:
-    desc: Run all automated tests
+    desc: Run the automated tests
     cmds:
-      - cargo test
+      - bun test
 
   check:
-    desc: Type-check all targets
+    desc: Type-check the TypeScript sources
     cmds:
-      - cargo check --all-targets
+      - bun run check
+
+  build:windows:
+    desc: Build the Windows x64 standalone executable
+    cmds:
+      - bun build --compile --target=bun-windows-x64 src/cli.ts --outfile dist/smith-windows-x64.exe
+
+  build:targets:
+    desc: Build the current target artifacts for Windows, Linux, and macOS ARM64
+    cmds:
+      - bun build --compile --target=bun-windows-x64 src/cli.ts --outfile dist/smith-windows-x64.exe
+      - bun build --compile --target=bun-linux-x64 src/cli.ts --outfile dist/smith-linux-x64
+      - bun build --compile --target=bun-darwin-arm64 src/cli.ts --outfile dist/smith-darwin-arm64
 
   clean:
-    desc: Remove build artifacts
+    desc: Remove build artifacts and dependencies
     cmds:
-      - cargo clean
+      - >-
+        bun -e "import { rm } from 'node:fs/promises'; await rm('dist', { recursive: true, force: true }); await rm('node_modules', { recursive: true, force: true }); await rm('bun.lock', { force: true });"
