@@ -3,6 +3,7 @@ import { getDefaultEnvironment, StdioClientTransport } from "@modelcontextprotoc
 import type { AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
 import { Type, type ImageContent, type TextContent } from "@earendil-works/pi-ai";
 import type { ApprovalKind } from "./protocol";
+import type { McpServerConfig } from "./mcp-config";
 
 export const DEFAULT_CHROME_DEVTOOLS_BROWSER_URL = "http://127.0.0.1:9222";
 const CHROME_DEVTOOLS_PACKAGE = "chrome-devtools-mcp@latest";
@@ -133,9 +134,13 @@ function defaultArgs(browserUrl: string): string[] {
   return ["-y", CHROME_DEVTOOLS_PACKAGE, "--slim", "--browser-url", browserUrl];
 }
 
+function resolveCommand(command: string): string {
+  return process.platform === "win32" && command === "npx" ? "npx.cmd" : command;
+}
+
 export async function connectChromeDevToolsMcp(options: ChromeDevToolsMcpOptions = {}): Promise<ChromeDevToolsMcpConnection> {
   const transport = new StdioClientTransport({
-    command: options.command ?? defaultCommand(),
+    command: resolveCommand(options.command ?? defaultCommand()),
     args: options.args ?? defaultArgs(options.browserUrl ?? DEFAULT_CHROME_DEVTOOLS_BROWSER_URL),
     cwd: options.workspaceRoot,
     env: { ...getDefaultEnvironment(), ...options.env },
@@ -159,4 +164,8 @@ export async function connectChromeDevToolsMcp(options: ChromeDevToolsMcpOptions
     await client.close().catch(() => undefined);
     throw new Error(`Chrome DevTools MCP connection failed: ${errorMessage(error)}`);
   }
+}
+
+export function connectConfiguredChromeDevToolsMcp(server: McpServerConfig, workspaceRoot: string): Promise<ChromeDevToolsMcpConnection> {
+  return connectChromeDevToolsMcp({ workspaceRoot, command: server.command, args: server.args, env: server.env });
 }

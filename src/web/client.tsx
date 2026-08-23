@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
 import { createRoot } from "react-dom/client";
 import { Markdown } from "./markdown";
-import type { ApprovalState, QueuedPrompt, SmithEvent, UiEvent, UiStateEvent } from "../protocol";
+import type { ApprovalDecision, ApprovalState, QueuedPrompt, SmithEvent, UiEvent, UiStateEvent } from "../protocol";
 
 type Density = "read" | "digest";
 
@@ -11,7 +11,7 @@ type TranscriptNode =
   | { id: string; kind: "system"; at: string; content: string }
   | { id: string; kind: "tool"; at: string; toolName: string; args: string; result?: string; status: "running" | "ok" | "error" };
 
-type DecisionHandler = (requestId: string, approved: boolean) => void | Promise<void>;
+type DecisionHandler = (requestId: string, decision: ApprovalDecision) => void | Promise<void>;
 
 const SIGIL = { user: "›", assistant: "·", tool: "✓", running: "◐", system: "!", approval: "?", queued: "»" };
 
@@ -52,7 +52,7 @@ function argEntries(args: Record<string, unknown>): Array<[string, string]> {
   return Object.entries(args).map(([key, value]) => [key, formatValue(value)]);
 }
 
-function Node({ tone, at, sigil, kind, summary, active = false, children }: { tone: string; at: string; sigil: string; kind: string; summary: string; active?: boolean; children: React.ReactNode }) {
+function Node({ tone, at, sigil, kind, summary, active = false, actions, children }: { tone: string; at: string; sigil: string; kind: string; summary: string; active?: boolean; actions?: React.ReactNode; children: React.ReactNode }) {
   return (
     <section className={`node node-${tone}${active ? " node-active" : ""}`}>
       <div className="node-in">
@@ -62,6 +62,7 @@ function Node({ tone, at, sigil, kind, summary, active = false, children }: { to
           <span className="node-summary">{summary}</span>
         </div>
         <div className="node-kind">{sigil} {kind}</div>
+        {actions}
         <div className="node-body">{children}</div>
       </div>
     </section>
@@ -101,10 +102,13 @@ function ApprovalNode({ approval, decide }: { approval: ApprovalState; decide: D
         </p>
       ))}
       <div className="approval-actions">
-        <button type="button" className="approve" onClick={() => void decide(approval.request.id, true)}>
+        <button type="button" className="approve" onClick={() => void decide(approval.request.id, "approve")}>
           Approve
         </button>
-        <button type="button" className="deny" onClick={() => void decide(approval.request.id, false)}>
+        <button type="button" className="always" onClick={() => void decide(approval.request.id, "always")}>
+          Always approve
+        </button>
+        <button type="button" className="deny" onClick={() => void decide(approval.request.id, "deny")}>
           Deny
         </button>
         <span>The run is parked until you answer.</span>
@@ -138,6 +142,7 @@ function Transcript({
   cancelQueued,
   workspace,
   running,
+  editSent,
 }: {
   nodes: TranscriptNode[];
   approvals: ApprovalState[];
@@ -147,6 +152,7 @@ function Transcript({
   cancelQueued: (id: string) => void;
   workspace: string;
   running: boolean;
+  editSent: (node: Extract<TranscriptNode, { kind: "user" }>) => void | Promise<void>;
 }) {
   const scroll = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
@@ -182,7 +188,22 @@ function Transcript({
           {nodes.map((node) => {
             if (node.kind === "user") {
               return (
-                <Node tone="user" at={node.at} sigil={SIGIL.user} kind="you" summary={node.content} key={node.id}>
+                <Node
+                  tone="user"
+                  at={node.at}
+                  sigil={SIGIL.user}
+                  kind="you"
+                  summary={node.content}
+                  actions={
+                    <div className="node-action-rail">
+                      <button type="button" className="node-edit" onClick={() => void editSent(node)} aria-label="Edit and resend this message">
+                        Edit
+                      </button>
+                      <span>branch</span>
+                    </div>
+                  }
+                  key={node.id}
+                >
                   <p className="ask">{node.content}</p>
                 </Node>
               );
@@ -234,12 +255,14 @@ function Composer({
   submit,
   running,
   error,
+  textareaRef,
 }: {
   draft: string;
   setDraft: (value: string) => void;
   submit: (event: Pick<FormEvent, "preventDefault">) => void | Promise<void>;
   running: boolean;
   error?: string;
+  textareaRef: React.RefObject<HTMLTextAreaElement | null>;
 }) {
   function onKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key === "Enter" && !event.shiftKey) {
@@ -256,6 +279,7 @@ function Composer({
           {SIGIL.user}
         </span>
         <textarea
+          ref={textareaRef}
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={onKeyDown}
@@ -273,11 +297,15 @@ function Bar({
   density,
   setDensity,
   abort,
+  createSession,
+  selectSession,
 }: {
   state: UiStateEvent;
   density: Density;
   setDensity: (value: Density) => void;
   abort: () => void | Promise<void>;
+  createSession: () => void | Promise<void>;
+  selectSession: (sessionId: string) => void | Promise<void>;
 }) {
   const mcpServers = state.mcpServers ?? [];
   const serverCount = mcpServers.length;
@@ -295,12 +323,20 @@ function Bar({
         <span className="bar-sep">·</span>
         <span className="bar-model">{state.model}</span>
         <span className="bar-spacer" />
-        <span className="density" role="group" aria-label="Transcript density">
+        <select className="session-picker" value={state.sessionId} onChange={(event) => void selectSession(event.target.value)} disabled={state.running} aria-label="Session">
+          {state.sessions.map((session) => (
+            <option value={session.id} key={session.id}>{session.title}</option>
+          ))}
+        </select>
+        <button type="button" className="bar-new" onClick={() => void createSession()} disabled={state.running}>
+          New
+        </button>
+        <span className="density" role="group" aria-label="Transcript mode">
           <button type="button" className={density === "digest" ? "is-on" : ""} onClick={() => setDensity("digest")} aria-pressed={density === "digest"}>
-            Digest
+            Timeline
           </button>
           <button type="button" className={density === "read" ? "is-on" : ""} onClick={() => setDensity("read")} aria-pressed={density === "read"}>
-            Read
+            Conversation
           </button>
         </span>
         <button type="button" className="bar-abort" onClick={() => void abort()} disabled={!state.running}>
@@ -328,11 +364,15 @@ function App() {
     model: "loading",
     configPath: "smith.config.json",
     running: false,
+    sessionId: "",
+    sessions: [],
+    history: [],
     approvals: [],
     queuedPrompts: [],
     mcpServers: [],
   });
   const [error, setError] = useState<string | undefined>();
+  const composerRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     const source = new EventSource("/events");
@@ -349,7 +389,9 @@ function App() {
   function handleEvent(event: UiEvent) {
     if (event.type === "state") {
       setState(event);
+      setNodes([]);
       setApprovals(event.approvals);
+      for (const historyEvent of event.history) applyAgentEvent(historyEvent);
       return;
     }
     if (event.type === "approval_request" || event.type === "approval_update") {
@@ -428,9 +470,9 @@ function App() {
     }
   }
 
-  async function decide(requestId: string, approved: boolean) {
+  async function decide(requestId: string, decision: ApprovalDecision) {
     try {
-      await post("/api/approval", { requestId, approved });
+      await post("/api/approval", { requestId, decision });
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : String(requestError));
     }
@@ -439,6 +481,24 @@ function App() {
   async function abort() {
     try {
       await post("/api/abort");
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : String(requestError));
+    }
+  }
+
+  async function createSession() {
+    try {
+      await post("/api/session/new");
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : String(requestError));
+    }
+  }
+
+  async function selectSession(sessionId: string) {
+    if (!sessionId || sessionId === state.sessionId) return;
+    try {
+      await post("/api/session/select", { sessionId });
+      setError(undefined);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : String(requestError));
     }
@@ -455,13 +515,25 @@ function App() {
   async function editQueued(prompt: QueuedPrompt) {
     setDraft(prompt.message);
     await cancelQueued(prompt.id);
+    composerRef.current?.focus();
+  }
+
+  async function editSent(node: Extract<TranscriptNode, { kind: "user" }>) {
+    try {
+      await post("/api/session/branch", { promptId: node.id });
+      setDraft(node.content);
+      setError(undefined);
+      composerRef.current?.focus();
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : String(requestError));
+    }
   }
 
   const pending = approvals.filter((approval) => approval.status === "pending");
 
   return (
     <main className="app" data-density={density}>
-      <Bar state={state} density={density} setDensity={setDensity} abort={abort} />
+      <Bar state={state} density={density} setDensity={setDensity} abort={abort} createSession={createSession} selectSession={selectSession} />
       <Transcript
         nodes={nodes}
         approvals={pending}
@@ -471,8 +543,9 @@ function App() {
         cancelQueued={(id) => void cancelQueued(id)}
         workspace={state.workspace}
         running={state.running}
+        editSent={editSent}
       />
-      <Composer draft={draft} setDraft={setDraft} submit={submit} running={state.running} error={error} />
+      <Composer draft={draft} setDraft={setDraft} submit={submit} running={state.running} error={error} textareaRef={composerRef} />
     </main>
   );
 }

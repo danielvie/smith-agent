@@ -1,4 +1,5 @@
 export type ApprovalKind = "write" | "shell" | "browser" | "web";
+export type ApprovalDecision = "approve" | "always" | "deny";
 export type ApprovalStatus = "pending" | "approved" | "denied" | "cancelled";
 
 export interface ApprovalRequest {
@@ -22,7 +23,7 @@ export interface QueuedPrompt {
   createdAt: number;
 }
 
-export type ApprovalHandler = (request: ApprovalRequest, signal?: AbortSignal) => Promise<boolean>;
+export type ApprovalHandler = (request: ApprovalRequest, signal?: AbortSignal) => Promise<ApprovalDecision>;
 
 export type SmithEvent =
   | { type: "status"; status: "started" | "turn_started" | "completed" }
@@ -41,12 +42,24 @@ export interface McpServerState {
   toolCount: number;
 }
 
+export interface SessionSummary {
+  id: string;
+  title: string;
+  modelId: string;
+  createdAt: number;
+  updatedAt: number;
+  messageCount: number;
+}
+
 export interface UiStateEvent {
   type: "state";
   workspace: string;
   model: string;
   configPath: string;
   running: boolean;
+  sessionId: string;
+  sessions: SessionSummary[];
+  history: SmithEvent[];
   approvals: ApprovalState[];
   queuedPrompts: QueuedPrompt[];
   mcpServers?: McpServerState[];

@@ -148,7 +148,7 @@ function asWorkspaceError(error: unknown, fallback: string): WorkspaceError {
   return new WorkspaceError(fallback);
 }
 
-async function readLimited(stream: ReadableStream<Uint8Array> | null, maxBytes: number): Promise<{ text: string; truncated: boolean }> {
+async function readLimited(stream: ReadableStream<Uint8Array> | null, maxBytes: number, signal?: AbortSignal): Promise<{ text: string; truncated: boolean }> {
   if (!stream) return { text: "", truncated: false };
 
   const reader = stream.getReader();
@@ -156,6 +156,9 @@ async function readLimited(stream: ReadableStream<Uint8Array> | null, maxBytes: 
   const chunks: Uint8Array[] = [];
   let bytes = 0;
   let truncated = false;
+  const cancel = () => void reader.cancel();
+  if (signal?.aborted) cancel();
+  else signal?.addEventListener("abort", cancel, { once: true });
 
   try {
     while (true) {
@@ -173,6 +176,7 @@ async function readLimited(stream: ReadableStream<Uint8Array> | null, maxBytes: 
       if (chunk.byteLength < next.value.byteLength) truncated = true;
     }
   } finally {
+    signal?.removeEventListener("abort", cancel);
     reader.releaseLock();
   }
 
@@ -365,7 +369,9 @@ export class Workspace {
     const commandLine = process.platform === "win32" ? ["cmd.exe", "/d", "/s", "/c", command] : ["/bin/sh", "-lc", command];
     const processHandle = Bun.spawn(commandLine, { cwd: cwdPath, stdout: "pipe", stderr: "pipe" });
     let timedOut = false;
+    const termination = new AbortController();
     const stopProcess = () => {
+      termination.abort();
       try {
         processHandle.kill();
       } catch {
@@ -381,8 +387,8 @@ export class Workspace {
 
     try {
       const [stdout, stderr] = await Promise.all([
-        readLimited(processHandle.stdout, this.maxCommandOutputBytes),
-        readLimited(processHandle.stderr, this.maxCommandOutputBytes),
+        readLimited(processHandle.stdout, this.maxCommandOutputBytes, termination.signal),
+        readLimited(processHandle.stderr, this.maxCommandOutputBytes, termination.signal),
       ]);
       const exitCode = await processHandle.exited;
 

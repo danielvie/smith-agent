@@ -1,0 +1,8 @@
+{
+  "alwaysApprove": [
+    "chrome_evaluate",
+    "chrome_navigate",
+    "chrome_screenshot",
+    "run_command"
+  ]
+}

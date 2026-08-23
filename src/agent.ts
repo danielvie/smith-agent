@@ -1,15 +1,14 @@
 import { randomUUID } from "node:crypto";
-import { Agent, type AgentEvent, type AgentTool, type AgentToolResult } from "@earendil-works/pi-agent-core";
+import { Agent, type AgentEvent, type AgentMessage, type AgentTool, type AgentToolResult } from "@earendil-works/pi-agent-core";
 import { createModels, Type, type Static } from "@earendil-works/pi-ai";
 import { fireworksProvider } from "@earendil-works/pi-ai/providers/fireworks";
 import type { BeforeToolCallContext } from "@earendil-works/pi-agent-core";
 import type { ApprovalHandler, ApprovalKind, ApprovalRequest, SmithEvent } from "./protocol";
-import { createWebTools } from "./web-search";
 import { DEFAULT_MAX_SEARCH_MATCHES, MAX_COMMAND_TIMEOUT_MS, type SearchResult, type Workspace, type WorkspaceEntry } from "./workspace";
 
 export type { ApprovalHandler, ApprovalRequest, SmithEvent } from "./protocol";
 
-const DEFAULT_MODEL_ID = "accounts/fireworks/models/kimi-k2p6";
+export const DEFAULT_MODEL_ID = "accounts/fireworks/models/kimi-k2p6";
 const PROTECTED_TOOLS = new Map<string, ApprovalKind>([
   ["write_file", "write"],
   ["edit_file", "write"],
@@ -185,22 +184,30 @@ export interface SmithAgentOptions {
   approve?: ApprovalHandler;
   extraTools?: AgentTool[];
   protectedToolKinds?: ReadonlyMap<string, ApprovalKind>;
+  sessionId?: string;
+  messages?: AgentMessage[];
+  onMessagesChange?: (messages: AgentMessage[]) => Promise<void> | void;
 }
 
 export class SmithAgentSession {
   readonly workspace: Workspace;
   readonly modelId: string;
   private readonly agent: Agent;
+
+  get messageCount(): number {
+    return this.agent.state.messages.length;
+  }
   private readonly listeners = new Set<SmithEventListener>();
 
   private constructor(options: SmithAgentOptions, agent: Agent) {
     this.workspace = options.workspace;
     this.modelId = options.modelId ?? DEFAULT_MODEL_ID;
     this.agent = agent;
-    this.agent.subscribe((event) => {
+    this.agent.subscribe(async (event) => {
       for (const appEvent of mapPiEvent(event)) {
         for (const listener of this.listeners) listener(appEvent);
       }
+      if (event.type === "agent_end") await options.onMessagesChange?.(this.agent.state.messages);
     });
   }
 
@@ -216,26 +223,26 @@ export class SmithAgentSession {
     const model = models.getModel("fireworks", modelId);
     if (!model) throw new AgentConfigurationError(`Fireworks model not found: ${modelId}.`);
 
-    const webTools = createWebTools();
-    const tools = [...createWorkspaceTools(options.workspace), ...webTools.tools, ...(options.extraTools ?? [])];
+    const tools = [...createWorkspaceTools(options.workspace), ...(options.extraTools ?? [])];
     const protectedToolKinds = new Map(PROTECTED_TOOLS);
-    for (const [toolName, kind] of webTools.protectedToolKinds) protectedToolKinds.set(toolName, kind);
     for (const [toolName, kind] of options.protectedToolKinds ?? []) protectedToolKinds.set(toolName, kind);
-    const approve = options.approve ?? (async () => false);
+    const approve = options.approve ?? (async () => "deny" as const);
     const agent = new Agent({
       initialState: {
         systemPrompt: [
           "You are Smith Agent, a local assistant for simple project automation.",
           `The workspace root is ${options.workspace.root}.`,
           "Use the workspace tools instead of inventing file contents or command output.",
-          "Use search when locating code or text. Use web_search for public web research when BRAVE_API_KEY is configured; use web_content for a known public URL. When Chrome DevTools tools are available, use them for interactive or login-dependent browsing rather than claiming to browse.",
+          "Use search when locating code or text. When Chrome DevTools tools are available, use the chrome_ tools for web searches and interactive or login-dependent browsing. If no browser tools are available, say so instead of claiming to browse.",
           "Paths passed to tools must be relative to the workspace root.",
           "Explain what you changed and report command results accurately.",
           "Use Markdown and LaTeX when they improve the answer. In browser mode, use fenced chart blocks with JSON ECharts options when a chart helps."
         ].join("\n"),
         model,
         tools,
+        messages: options.messages ?? [],
       },
+      sessionId: options.sessionId,
       streamFn: models.streamSimple.bind(models),
       getApiKey: () => apiKey,
       toolExecution: "sequential",
@@ -271,7 +278,7 @@ async function checkApproval(context: BeforeToolCallContext, approve: ApprovalHa
   const args = context.args && typeof context.args === "object" ? context.args as Record<string, unknown> : {};
   const request: ApprovalRequest = { id: randomUUID(), kind, toolName: context.toolCall.name, args };
   try {
-    if (await approve(request, signal)) return undefined;
+    if ((await approve(request, signal)) !== "deny") return undefined;
     return { block: true, terminate: true, reason: "Approval denied by the user." };
   } catch (error) {
     return { block: true, terminate: true, reason: `Approval failed: ${errorMessage(error)}` };

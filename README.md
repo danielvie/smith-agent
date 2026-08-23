@@ -28,25 +28,56 @@ Model settings live in `smith.config.json` at the workspace root:
 
 ```json
 {
-  "model": "accounts/fireworks/models/kimi-k2p6",
-  "chromeDevtools": false
+  "model": "accounts/fireworks/models/kimi-k2p6"
 }
 ```
 
-Use `--config <relative-path>` for another config file. `SMITH_MODEL` overrides the config file for one session. Keep `API_KEY_FIREWORKS` and the optional `BRAVE_API_KEY` in environment variables, not in the config file.
+MCP servers live in `mcp.json` at the workspace root:
 
-The current slice includes real workspace automation through `list_files`, `read_file`, `search`, `write_file`, `edit_file`, and approved `run_command` tools, plus optional `web_search` and `web_content` tools. Reads and local search stay inside the canonical workspace root. Writes, edits, shell commands, browser actions, and web requests ask for approval.
-
-## Web search
-
-Set `BRAVE_API_KEY` to enable public web search through the Brave Search API. Smith exposes `web_search` for source-backed results and optional bounded page text, and `web_content` for a known public URL. These calls are approval-gated and keep the key server-side.
-
-```powershell
-$env:BRAVE_API_KEY = "<your Brave key>"
-task run
+```json
+{
+  "mcpServers": {
+    "chrome-devtools": {
+      "enabled": true,
+      "command": "npx",
+      "args": ["-y", "chrome-devtools-mcp@latest", "--slim", "--browser-url", "http://127.0.0.1:9222"]
+    }
+  }
+}
 ```
 
-Chrome DevTools MCP remains the option for interactive pages, screenshots, and login-dependent browsing.
+Use `--config <relative-path>` or `--mcp-config <relative-path>` to select another config file. `SMITH_MODEL` overrides the model for one session. Keep `API_KEY_FIREWORKS` in the environment, not in a config file.
+
+The current slice includes real workspace automation through `list_files`, `read_file`, `search`, `write_file`, `edit_file`, and approved `run_command` tools, plus optional Chrome DevTools MCP tools for web research and browser interaction. Reads and local search stay inside the canonical workspace root. Writes, edits, shell commands, and browser actions ask for approval.
+
+Chrome DevTools MCP is the only web-browsing path. It supports interactive pages, screenshots, and login-dependent browsing.
+
+## Approvals
+
+Protected tools ask for approval. Choose `Always approve` in the UI, or type `a` in the CLI, to persist an exact tool name in `approvals.json`:
+
+```json
+{
+  "alwaysApprove": ["chrome_navigate"]
+}
+```
+
+The rule applies to every future call of that tool in the current workspace. Remove the tool name from `approvals.json` to require approval again. This does not approve other tools or restrict the tool's arguments.
+
+## Sessions
+
+Smith stores resumable sessions under `.smith/sessions/`. It resumes the most recently updated session by default. Session files contain the model transcript and UI history, and `.smith/` is ignored by Git because conversations can contain sensitive data.
+
+The UI has a session picker and a New button. In the CLI:
+
+```powershell
+bun run src/cli.ts --new-session
+bun run src/cli.ts --session <session-id>
+```
+
+While running the CLI, use `/sessions`, `/new`, or `/resume <session-id>` to switch sessions. Switching is disabled while a run is active.
+
+In the browser UI, use `Edit` on a sent message to branch from that point. Smith removes that prompt and all later history from the active session, restores the Pi context before it, and puts the old text in the composer for editing. Sending it creates the new continuation.
 
 ## Browser UI
 
@@ -72,13 +103,17 @@ The UI binds to `127.0.0.1`, streams events with SSE, queues prompts sent during
 
 ## Chrome DevTools MCP
 
-Chrome web tools are optional. Start Chrome with remote debugging on `127.0.0.1:9222`, then enable the bridge with either `--chrome-devtools`, `SMITH_CHROME_DEVTOOLS=true`, or `"chromeDevtools": true` in `smith.config.json`:
+Chrome web tools are enabled by the `chrome-devtools` entry in `mcp.json`. The current config uses `--browser-url http://127.0.0.1:9222`, so Chrome must already be running with remote debugging enabled on that port.
+
+Smith launches the configured MCP command, discovers its tools, prefixes them with `chrome_`, and routes browser actions through the existing approval flow. To let the MCP server manage its own browser, replace the browser URL arguments with `--headless` in `mcp.json`.
+
+Run the live integration check with:
 
 ```powershell
-bun run src/cli.ts --chrome-devtools
-bun run src/cli.ts --ui --chrome-devtools
+$env:SMITH_MCP_INTEGRATION = "1"
+bun test tests/mcp.integration.test.ts
 ```
 
-Smith launches `npx -y chrome-devtools-mcp@latest --slim --browser-url http://127.0.0.1:9222`, discovers its tools, prefixes them with `chrome_`, and routes browser actions through the existing approval flow. This requires `npx`, network access on first launch, and a Chrome instance with remote debugging enabled.
+The check navigates to a Google search through Smith's MCP bridge and reads the returned page text. With the current config, Chrome must be reachable at `http://127.0.0.1:9222` before running it.
 
 The Pi adapter and MCP bridge stay behind `src/agent.ts` and `src/mcp.ts` so terminal and browser clients use the same app-owned event and approval types.

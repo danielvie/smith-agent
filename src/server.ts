@@ -1,10 +1,13 @@
 import { randomUUID } from "node:crypto";
 import index from "./web/index.html";
 import { ApprovalManager } from "./approval";
-import { SmithAgentSession } from "./agent";
-import { connectChromeDevToolsMcp } from "./mcp";
+import { loadApprovalPolicy } from "./approval-policy";
+import { DEFAULT_MODEL_ID, SmithAgentSession } from "./agent";
+import { branchSessionRecord, SessionStore, type SessionRecord } from "./session";
+import { connectConfiguredChromeDevToolsMcp } from "./mcp";
 import { DEFAULT_CONFIG_PATH, loadSmithConfig } from "./config";
-import type { ApprovalState, McpServerState, QueuedPrompt, UiEvent, UiStateEvent } from "./protocol";
+import { DEFAULT_MCP_CONFIG_PATH, loadMcpConfig } from "./mcp-config";
+import type { ApprovalDecision, ApprovalState, McpServerState, QueuedPrompt, SessionSummary, SmithEvent, UiEvent, UiStateEvent } from "./protocol";
 import { openWorkspace, type Workspace } from "./workspace";
 
 export const DEFAULT_UI_PORT = 3210;
@@ -84,8 +87,10 @@ class SseHub {
 export interface UiServerOptions {
   workspacePath?: string;
   configPath?: string;
+  mcpConfigPath?: string;
+  sessionId?: string;
+  newSession?: boolean;
   port?: number;
-  chromeDevtools?: boolean;
 }
 
 export interface UiServerHandle {
@@ -123,12 +128,15 @@ function messageFrom(body: Record<string, unknown>): string {
   return body.message;
 }
 
-function stateEvent(workspace: Workspace, model: string, configPath: string, running: boolean, approvals: ApprovalState[], queuedPrompts: QueuedPrompt[], mcpServers: McpServerState[]): UiStateEvent {
+function stateEvent(workspace: Workspace, model: string, configPath: string, sessionId: string, sessions: SessionSummary[], history: SmithEvent[], running: boolean, approvals: ApprovalState[], queuedPrompts: QueuedPrompt[], mcpServers: McpServerState[]): UiStateEvent {
   return {
     type: "state",
     workspace: workspace.root,
     model,
     configPath,
+    sessionId,
+    sessions: sessions.map((session) => ({ ...session })),
+    history: history.map((event) => ({ ...event })),
     running,
     approvals,
     queuedPrompts: queuedPrompts.map((prompt) => ({ ...prompt })),
@@ -136,49 +144,83 @@ function stateEvent(workspace: Workspace, model: string, configPath: string, run
   };
 }
 
-function envFlag(name: string): boolean | undefined {
-  const value = process.env[name]?.trim().toLowerCase();
-  if (!value) return undefined;
-  if (["1", "true", "yes", "on"].includes(value)) return true;
-  if (["0", "false", "no", "off"].includes(value)) return false;
-  return undefined;
-}
 
 export async function startUiServer(options: UiServerOptions = {}): Promise<UiServerHandle> {
   const workspace = await openWorkspace(options.workspacePath ?? process.cwd());
   const configPath = options.configPath ?? DEFAULT_CONFIG_PATH;
+  const mcpConfigPath = options.mcpConfigPath ?? DEFAULT_MCP_CONFIG_PATH;
   const config = await loadSmithConfig(workspace, configPath);
+  const mcpConfig = await loadMcpConfig(workspace, mcpConfigPath);
+  const approvalPolicy = await loadApprovalPolicy(workspace);
   const modelId = process.env.SMITH_MODEL?.trim() || config.model;
-  const approvals = new ApprovalManager();
-  const enableChromeDevtools = options.chromeDevtools ?? config.chromeDevtools ?? envFlag("SMITH_CHROME_DEVTOOLS") ?? false;
-  const chromeMcp = enableChromeDevtools ? await connectChromeDevToolsMcp({ workspaceRoot: workspace.root }) : undefined;
-  let session: SmithAgentSession;
-  try {
-    session = SmithAgentSession.create({
-      workspace,
-      modelId,
-      approve: approvals.request,
-      extraTools: chromeMcp?.tools,
-      protectedToolKinds: chromeMcp?.protectedToolKinds,
-    });
-  } catch (error) {
-    await chromeMcp?.close();
-    throw error;
-  }
+  const selectedModelId = modelId ?? DEFAULT_MODEL_ID;
+  const sessionStore = new SessionStore(workspace);
+  const sessionRecord = options.newSession
+    ? await sessionStore.create(selectedModelId)
+    : options.sessionId
+      ? await sessionStore.load(options.sessionId)
+      : await sessionStore.latest() ?? await sessionStore.create(selectedModelId);
+  let activeSessionRecord: SessionRecord = sessionRecord;
+  let sessionSummaries = await sessionStore.list();
+  const approvals = new ApprovalManager(approvalPolicy);
+  const chromeServer = mcpConfig.mcpServers?.["chrome-devtools"];
+  const chromeMcp = chromeServer && chromeServer.enabled !== false
+    ? await connectConfiguredChromeDevToolsMcp(chromeServer, workspace.root)
+    : undefined;
+  let session!: SmithAgentSession;
+  let unsubscribeSession: () => void = () => {};
   let running = false;
   let activeRun: Promise<void> | undefined;
   let stopped = false;
   const queuedPrompts: QueuedPrompt[] = [];
   const mcpServers: McpServerState[] = chromeMcp ? [{ name: "chrome-devtools", toolCount: chromeMcp.tools.length }] : [];
+  let events: SseHub;
 
-  const currentState = () => stateEvent(workspace, session.modelId, configPath, running, approvals.list(), queuedPrompts, mcpServers);
-  const events = new SseHub(currentState);
-  session.subscribe((event) => events.publish(event));
+  const currentState = () => stateEvent(workspace, session.modelId, configPath, activeSessionRecord.id, sessionSummaries, activeSessionRecord.history, running, approvals.list(), queuedPrompts, mcpServers);
+  events = new SseHub(currentState);
+
+  const createSession = (record: SessionRecord): SmithAgentSession => SmithAgentSession.create({
+    workspace,
+    modelId: record.modelId,
+    sessionId: record.id,
+    messages: record.messages,
+    approve: approvals.request,
+    extraTools: chromeMcp?.tools,
+    protectedToolKinds: chromeMcp?.protectedToolKinds,
+    onMessagesChange: async (messages) => {
+      record.messages = messages;
+      await sessionStore.save(record);
+      sessionSummaries = await sessionStore.list();
+      events.publish(currentState());
+    },
+  });
+
+  const attachSession = (record: SessionRecord): void => {
+    unsubscribeSession();
+    activeSessionRecord = record;
+    session = createSession(record);
+    unsubscribeSession = session.subscribe((event) => {
+      record.history.push(event);
+      events.publish(event);
+    });
+    events.publish(currentState());
+  };
+
+  try {
+    attachSession(sessionRecord);
+  } catch (error) {
+    await chromeMcp?.close();
+    throw error;
+  }
   approvals.subscribe((event) => events.publish(event));
 
   const runPrompt = (prompt: QueuedPrompt): void => {
     running = true;
-    events.publish({ type: "prompt_start", promptId: prompt.id, message: prompt.message });
+    if (activeSessionRecord.title === "New session") void sessionStore.setTitle(activeSessionRecord, prompt.message);
+    const promptStart: SmithEvent = { type: "prompt_start", promptId: prompt.id, message: prompt.message };
+    activeSessionRecord.promptMessageStarts[prompt.id] = session.messageCount;
+    activeSessionRecord.history.push(promptStart);
+    events.publish(promptStart);
     events.publish(currentState());
     const run = Promise.resolve().then(() => session.prompt(prompt.message)).catch((error: unknown) => {
       events.publish({ type: "error", message: error instanceof Error ? error.message : String(error) });
@@ -232,6 +274,7 @@ export async function startUiServer(options: UiServerOptions = {}): Promise<UiSe
 
       if (request.method === "GET" && url.pathname === "/events") return events.response();
       if (request.method === "GET" && url.pathname === "/api/state") return json(currentState());
+      if (request.method === "GET" && url.pathname === "/api/sessions") return json({ sessions: sessionSummaries, activeSessionId: activeSessionRecord.id });
 
       if (request.method !== "POST") return json({ error: "Not found" }, 404);
 
@@ -239,6 +282,34 @@ export async function startUiServer(options: UiServerOptions = {}): Promise<UiSe
         const body = await requestBody(request);
         if (url.pathname === "/api/prompt") {
           return json(submitPrompt(messageFrom(body)), 202);
+        }
+
+        if (url.pathname === "/api/session/new") {
+          if (activeRun) return json({ error: "Cannot switch sessions while a run is active." }, 409);
+          const record = await sessionStore.create(selectedModelId);
+          attachSession(record);
+          sessionSummaries = await sessionStore.list();
+          events.publish(currentState());
+          return json({ accepted: true, sessionId: record.id }, 202);
+        }
+        if (url.pathname === "/api/session/select") {
+          if (activeRun) return json({ error: "Cannot switch sessions while a run is active." }, 409);
+          if (typeof body.sessionId !== "string") return json({ error: "sessionId is required." }, 400);
+          const record = await sessionStore.load(body.sessionId);
+          attachSession(record);
+          sessionSummaries = await sessionStore.list();
+          events.publish(currentState());
+          return json({ accepted: true, sessionId: record.id }, 202);
+        }
+        if (url.pathname === "/api/session/branch") {
+          if (activeRun) return json({ error: "Cannot branch a session while a run is active." }, 409);
+          if (typeof body.promptId !== "string") return json({ error: "promptId is required." }, 400);
+          branchSessionRecord(activeSessionRecord, body.promptId);
+          attachSession(activeSessionRecord);
+          await sessionStore.save(activeSessionRecord);
+          sessionSummaries = await sessionStore.list();
+          events.publish(currentState());
+          return json({ accepted: true, sessionId: activeSessionRecord.id }, 202);
         }
         if (url.pathname === "/api/queue/cancel") {
           if (typeof body.queueId !== "string" || !body.queueId) return json({ error: "queueId is required." }, 400);
@@ -255,10 +326,16 @@ export async function startUiServer(options: UiServerOptions = {}): Promise<UiSe
           return json({ accepted: true }, 202);
         }
         if (url.pathname === "/api/approval") {
-          if (typeof body.requestId !== "string" || typeof body.approved !== "boolean") {
-            return json({ error: "requestId and approved are required." }, 400);
+          if (typeof body.requestId !== "string") return json({ error: "requestId is required." }, 400);
+          let decision: ApprovalDecision;
+          if (body.decision === "approve" || body.decision === "always" || body.decision === "deny") {
+            decision = body.decision;
+          } else if (typeof body.approved === "boolean") {
+            decision = body.approved ? "approve" : "deny";
+          } else {
+            return json({ error: "decision must be approve, always, or deny." }, 400);
           }
-          if (!approvals.decide(body.requestId, body.approved)) return json({ error: "Approval is no longer pending." }, 409);
+          if (!(await approvals.decide(body.requestId, decision))) return json({ error: "Approval is no longer pending." }, 409);
           return json({ accepted: true }, 202);
         }
         return json({ error: "Not found" }, 404);
@@ -280,6 +357,7 @@ export async function startUiServer(options: UiServerOptions = {}): Promise<UiSe
       approvals.cancelAll();
       events.close();
       void server.stop(true);
+      unsubscribeSession();
       void chromeMcp?.close();
     },
   };

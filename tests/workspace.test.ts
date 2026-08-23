@@ -85,4 +85,11 @@ describe("workspace boundary", () => {
     expect(result.stdout.trim()).toBe("smith");
     expect(result.cwd).toBe(".");
   });
+
+  test("reports a timeout when a child keeps command output open", async () => {
+    if (process.platform === "win32") return;
+    const { workspace } = await makeWorkspace();
+
+    await expect(workspace.runCommand("sleep 1 &", ".", undefined, 50)).rejects.toThrow("Command timed out after 50 ms.");
+  });
 });

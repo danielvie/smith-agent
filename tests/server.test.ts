@@ -3,6 +3,9 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { startUiServer, type UiServerHandle } from "../src/server";
+import { SessionStore } from "../src/session";
+import { openWorkspace } from "../src/workspace";
+import type { SmithEvent } from "../src/protocol";
 
 const temporaryDirectories: string[] = [];
 const servers: UiServerHandle[] = [];
@@ -39,6 +42,65 @@ describe("browser server", () => {
     const firstEvent = await reader.read();
     await reader.cancel();
     expect(new TextDecoder().decode(firstEvent.value)).toContain('"type":"state"');
+  });
+
+  test("creates and switches persisted UI sessions", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "smith-ui-sessions-"));
+    temporaryDirectories.push(directory);
+    process.env.API_KEY_FIREWORKS = "test-fireworks-key";
+
+    const server = await startUiServer({ workspacePath: directory, port: 0 });
+    servers.push(server);
+    const initialState = await (await fetch(new URL("api/state", server.url))).json() as { sessionId: string; sessions: Array<{ id: string }> };
+    expect(initialState.sessionId).toBeString();
+    expect(initialState.sessions).toHaveLength(1);
+
+    const created = await fetch(new URL("api/session/new", server.url), { method: "POST", body: "{}" });
+    expect(created.status).toBe(202);
+    const nextState = await (await fetch(new URL("api/state", server.url))).json() as { sessionId: string; sessions: Array<{ id: string }> };
+    expect(nextState.sessionId).not.toBe(initialState.sessionId);
+    expect(nextState.sessions).toHaveLength(2);
+
+    const resumed = await fetch(new URL("api/session/select", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId: initialState.sessionId }),
+    });
+    expect(resumed.status).toBe(202);
+    expect((await (await fetch(new URL("api/state", server.url))).json()).sessionId).toBe(initialState.sessionId);
+  });
+
+  test("branches a persisted UI session before an edited prompt", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "smith-ui-branch-"));
+    temporaryDirectories.push(directory);
+    process.env.API_KEY_FIREWORKS = "test-fireworks-key";
+
+    const workspace = await openWorkspace(directory);
+    const store = new SessionStore(workspace);
+    const record = await store.create("accounts/fireworks/models/kimi-k2p6");
+    record.history = [
+      { type: "prompt_start", promptId: "prompt-1", message: "first" },
+      { type: "status", status: "completed" },
+      { type: "prompt_start", promptId: "prompt-2", message: "second" },
+      { type: "status", status: "completed" },
+    ];
+    record.promptMessageStarts = { "prompt-1": 0, "prompt-2": 0 };
+    await store.save(record);
+
+    const server = await startUiServer({ workspacePath: directory, sessionId: record.id, port: 0 });
+    servers.push(server);
+    const response = await fetch(new URL("api/session/branch", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ promptId: "prompt-2" }),
+    });
+
+    expect(response.status).toBe(202);
+    const state = await (await fetch(new URL("api/state", server.url))).json() as { history: SmithEvent[] };
+    expect(state.history).toEqual([
+      { type: "prompt_start", promptId: "prompt-1", message: "first" },
+      { type: "status", status: "completed" },
+    ]);
   });
 
   test("rejects cancellation for unknown queued prompts", async () => {
