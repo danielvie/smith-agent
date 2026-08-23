@@ -4,6 +4,7 @@ import { createModels, Type, type Static } from "@earendil-works/pi-ai";
 import { fireworksProvider } from "@earendil-works/pi-ai/providers/fireworks";
 import type { BeforeToolCallContext } from "@earendil-works/pi-agent-core";
 import type { ApprovalHandler, ApprovalKind, ApprovalRequest, SmithEvent } from "./protocol";
+import { createWebTools } from "./web-search";
 import { DEFAULT_MAX_SEARCH_MATCHES, MAX_COMMAND_TIMEOUT_MS, type SearchResult, type Workspace, type WorkspaceEntry } from "./workspace";
 
 export type { ApprovalHandler, ApprovalRequest, SmithEvent } from "./protocol";
@@ -215,8 +216,10 @@ export class SmithAgentSession {
     const model = models.getModel("fireworks", modelId);
     if (!model) throw new AgentConfigurationError(`Fireworks model not found: ${modelId}.`);
 
-    const tools = [...createWorkspaceTools(options.workspace), ...(options.extraTools ?? [])];
+    const webTools = createWebTools();
+    const tools = [...createWorkspaceTools(options.workspace), ...webTools.tools, ...(options.extraTools ?? [])];
     const protectedToolKinds = new Map(PROTECTED_TOOLS);
+    for (const [toolName, kind] of webTools.protectedToolKinds) protectedToolKinds.set(toolName, kind);
     for (const [toolName, kind] of options.protectedToolKinds ?? []) protectedToolKinds.set(toolName, kind);
     const approve = options.approve ?? (async () => false);
     const agent = new Agent({
@@ -225,7 +228,7 @@ export class SmithAgentSession {
           "You are Smith Agent, a local assistant for simple project automation.",
           `The workspace root is ${options.workspace.root}.`,
           "Use the workspace tools instead of inventing file contents or command output.",
-          "Use search when locating code or text. When Chrome DevTools tools are available, use them for requested web research rather than claiming to browse.",
+          "Use search when locating code or text. Use web_search for public web research when BRAVE_API_KEY is configured; use web_content for a known public URL. When Chrome DevTools tools are available, use them for interactive or login-dependent browsing rather than claiming to browse.",
           "Paths passed to tools must be relative to the workspace root.",
           "Explain what you changed and report command results accurately.",
           "Use Markdown and LaTeX when they improve the answer. In browser mode, use fenced chart blocks with JSON ECharts options when a chart helps."

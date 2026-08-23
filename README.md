@@ -33,9 +33,20 @@ Model settings live in `smith.config.json` at the workspace root:
 }
 ```
 
-Use `--config <relative-path>` for another config file. `SMITH_MODEL` overrides the config file for one session. Keep API keys in `API_KEY_FIREWORKS`, not in the config file.
+Use `--config <relative-path>` for another config file. `SMITH_MODEL` overrides the config file for one session. Keep `API_KEY_FIREWORKS` and the optional `BRAVE_API_KEY` in environment variables, not in the config file.
 
-The current slice includes real workspace automation through `list_files`, `read_file`, `search`, `write_file`, `edit_file`, and approved `run_command` tools. Reads and search stay inside the canonical workspace root. Writes, edits, shell commands, and browser actions ask for approval.
+The current slice includes real workspace automation through `list_files`, `read_file`, `search`, `write_file`, `edit_file`, and approved `run_command` tools, plus optional `web_search` and `web_content` tools. Reads and local search stay inside the canonical workspace root. Writes, edits, shell commands, browser actions, and web requests ask for approval.
+
+## Web search
+
+Set `BRAVE_API_KEY` to enable public web search through the Brave Search API. Smith exposes `web_search` for source-backed results and optional bounded page text, and `web_content` for a known public URL. These calls are approval-gated and keep the key server-side.
+
+```powershell
+$env:BRAVE_API_KEY = "<your Brave key>"
+task run
+```
+
+Chrome DevTools MCP remains the option for interactive pages, screenshots, and login-dependent browsing.
 
 ## Browser UI
 

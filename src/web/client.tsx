@@ -44,6 +44,7 @@ function summarise(source: string): string {
 function approvalTitle(kind: string): string {
   if (kind === "shell") return "Run a command";
   if (kind === "browser") return "Use the browser";
+  if (kind === "web") return "Search the web";
   return "Write to a file";
 }
 

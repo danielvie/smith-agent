@@ -1,4 +1,4 @@
-export type ApprovalKind = "write" | "shell" | "browser";
+export type ApprovalKind = "write" | "shell" | "browser" | "web";
 export type ApprovalStatus = "pending" | "approved" | "denied" | "cancelled";
 
 export interface ApprovalRequest {

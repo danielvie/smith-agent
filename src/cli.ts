@@ -80,6 +80,7 @@ function printHelp(): void {
 
 function approvalSummary(request: ApprovalRequest): string {
   if (request.kind === "browser") return `browser action '${request.toolName}'`;
+  if (request.kind === "web") return `web request '${request.toolName}'`;
   if (request.toolName === "run_command") {
     const command = String(request.args.command ?? "").replace(/\s+/gu, " ").trim();
     return `command '${command.slice(0, 160)}${command.length > 160 ? "..." : ""}'`;
