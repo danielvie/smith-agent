@@ -5,6 +5,17 @@ import type { ApprovalDecision, ApprovalState, QueuedPrompt, SmithEvent, UiEvent
 
 type Density = "read" | "digest";
 
+const DENSITY_STORAGE_KEY = "smith.transcript-density";
+
+function storedDensity(): Density {
+  try {
+    const value = localStorage.getItem(DENSITY_STORAGE_KEY);
+    return value === "digest" || value === "read" ? value : "read";
+  } catch {
+    return "read";
+  }
+}
+
 type TranscriptNode =
   | { id: string; kind: "user"; at: string; content: string }
   | { id: string; kind: "assistant"; at: string; content: string }
@@ -52,15 +63,25 @@ function argEntries(args: Record<string, unknown>): Array<[string, string]> {
   return Object.entries(args).map(([key, value]) => [key, formatValue(value)]);
 }
 
-function Node({ tone, at, sigil, kind, summary, active = false, actions, children }: { tone: string; at: string; sigil: string; kind: string; summary: string; active?: boolean; actions?: React.ReactNode; children: React.ReactNode }) {
+function Node({ tone, at, sigil, kind, summary, active = false, actions, expanded = false, onToggle, children }: { tone: string; at: string; sigil: string; kind: string; summary: string; active?: boolean; actions?: React.ReactNode; expanded?: boolean; onToggle?: () => void; children: React.ReactNode }) {
+  const row = (
+    <>
+      <span className="node-sigil">{sigil}</span>
+      <span className="node-summary">{summary}</span>
+      {onToggle && <span className="node-disclosure" aria-hidden="true">{expanded ? "−" : "+"}</span>}
+    </>
+  );
   return (
-    <section className={`node node-${tone}${active ? " node-active" : ""}`}>
+    <section className={`node node-${tone}${active ? " node-active" : ""}${expanded ? " node-expanded" : ""}`}>
       <div className="node-in">
         <span className="node-at">{at}</span>
-        <div className="node-row">
-          <span className="node-sigil">{sigil}</span>
-          <span className="node-summary">{summary}</span>
-        </div>
+        {onToggle ? (
+          <button type="button" className="node-row node-toggle" onClick={onToggle} aria-expanded={expanded} aria-label={`${expanded ? "Collapse" : "Expand"} ${kind} item`}>
+            {row}
+          </button>
+        ) : (
+          <div className="node-row">{row}</div>
+        )}
         <div className="node-kind">{sigil} {kind}</div>
         {actions}
         <div className="node-body">{children}</div>
@@ -69,7 +90,7 @@ function Node({ tone, at, sigil, kind, summary, active = false, actions, childre
   );
 }
 
-function ToolNode({ node }: { node: Extract<TranscriptNode, { kind: "tool" }> }) {
+function ToolNode({ node, expanded, onToggle }: { node: Extract<TranscriptNode, { kind: "tool" }>; expanded: boolean; onToggle: () => void }) {
   const running = node.status === "running";
   return (
     <Node
@@ -78,6 +99,8 @@ function ToolNode({ node }: { node: Extract<TranscriptNode, { kind: "tool" }> })
       sigil={running ? SIGIL.running : SIGIL.tool}
       kind={running ? "running" : node.status === "error" ? "failed" : "ran"}
       summary={`${node.toolName} ${node.args}`}
+      expanded={expanded}
+      onToggle={onToggle}
     >
       <p className="tool-call">
         <strong>{node.toolName}</strong> <span>{node.args}</span>
@@ -156,6 +179,9 @@ function Transcript({
 }) {
   const scroll = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
+  const [expandedNodeId, setExpandedNodeId] = useState<string | null>(null);
+
+  const toggleNode = (nodeId: string) => setExpandedNodeId((current) => current === nodeId ? null : nodeId);
 
   function onScroll() {
     const element = scroll.current;
@@ -194,6 +220,8 @@ function Transcript({
                   sigil={SIGIL.user}
                   kind="you"
                   summary={node.content}
+                  expanded={expandedNodeId === node.id}
+                  onToggle={() => toggleNode(node.id)}
                   actions={
                     <div className="node-action-rail">
                       <button type="button" className="node-edit" onClick={() => void editSent(node)} aria-label="Edit and resend this message">
@@ -208,16 +236,16 @@ function Transcript({
                 </Node>
               );
             }
-            if (node.kind === "tool") return <ToolNode node={node} key={node.id} />;
+            if (node.kind === "tool") return <ToolNode node={node} expanded={expandedNodeId === node.id} onToggle={() => toggleNode(node.id)} key={node.id} />;
             if (node.kind === "system") {
               return (
-                <Node tone="system" at={node.at} sigil={SIGIL.system} kind="error" summary={node.content} key={node.id}>
+                <Node tone="system" at={node.at} sigil={SIGIL.system} kind="error" summary={node.content} expanded={expandedNodeId === node.id} onToggle={() => toggleNode(node.id)} key={node.id}>
                   <p className="system-text">{node.content}</p>
                 </Node>
               );
             }
             return (
-              <Node tone="say" at={node.at} sigil={SIGIL.assistant} kind="smith" summary={summarise(node.content)} active={node.id === activeAssistantId} key={node.id}>
+              <Node tone="say" at={node.at} sigil={SIGIL.assistant} kind="smith" summary={summarise(node.content)} active={node.id === activeAssistantId} expanded={expandedNodeId === node.id} onToggle={() => toggleNode(node.id)} key={node.id}>
                 <Markdown source={node.content} />
               </Node>
             );
@@ -380,6 +408,7 @@ function Bar({
   setDensity,
   abort,
   createSession,
+  deleteSession,
   selectSession,
 }: {
   state: UiStateEvent;
@@ -387,6 +416,7 @@ function Bar({
   setDensity: (value: Density) => void;
   abort: () => void | Promise<void>;
   createSession: () => void | Promise<void>;
+  deleteSession: () => void | Promise<void>;
   selectSession: (sessionId: string) => void | Promise<void>;
 }) {
   const mcpServers = state.mcpServers ?? [];
@@ -412,6 +442,9 @@ function Bar({
         </select>
         <button type="button" className="bar-new" onClick={() => void createSession()} disabled={state.running}>
           New
+        </button>
+        <button type="button" className="bar-delete" onClick={() => void deleteSession()} disabled={state.running || !state.sessionId}>
+          Delete
         </button>
         <span className="density" role="group" aria-label="Transcript mode">
           <button type="button" className={density === "digest" ? "is-on" : ""} onClick={() => setDensity("digest")} aria-pressed={density === "digest"}>
@@ -439,7 +472,7 @@ function App() {
   const [nodes, setNodes] = useState<TranscriptNode[]>([]);
   const [approvals, setApprovals] = useState<ApprovalState[]>([]);
   const [draft, setDraft] = useState("");
-  const [density, setDensity] = useState<Density>("read");
+  const [density, setDensity] = useState<Density>(storedDensity);
   const [state, setState] = useState<UiStateEvent>({
     type: "state",
     workspace: "loading",
@@ -457,6 +490,14 @@ function App() {
   const [renamingSession, setRenamingSession] = useState(false);
   const [sessionTitleDraft, setSessionTitleDraft] = useState("");
   const composerRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(DENSITY_STORAGE_KEY, density);
+    } catch {
+      // Browsers can disable storage; the in-memory preference still works.
+    }
+  }, [density]);
 
   useEffect(() => {
     const source = new EventSource("/events");
@@ -579,6 +620,18 @@ function App() {
     }
   }
 
+  async function deleteSession() {
+    const session = state.sessions.find((item) => item.id === state.sessionId);
+    if (!session || !window.confirm(`Delete session "${session.title}"? This cannot be undone.`)) return;
+    setRenamingSession(false);
+    try {
+      await post("/api/session/delete", { sessionId: session.id });
+      setError(undefined);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : String(requestError));
+    }
+  }
+
   async function selectSession(sessionId: string) {
     if (!sessionId || sessionId === state.sessionId) return;
     setRenamingSession(false);
@@ -648,7 +701,7 @@ function App() {
 
   return (
     <main className="app" data-density={density}>
-      <Bar state={state} density={density} setDensity={setDensity} abort={abort} createSession={createSession} selectSession={selectSession} />
+      <Bar state={state} density={density} setDensity={setDensity} abort={abort} createSession={createSession} deleteSession={deleteSession} selectSession={selectSession} />
       <SessionTitle
         session={activeSession}
         contextUsage={state.contextUsage}

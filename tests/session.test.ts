@@ -47,6 +47,20 @@ describe("session store", () => {
     await expect(store.setTitle(record, "   ")).rejects.toThrow("Session title must not be empty.");
   });
 
+  test("deletes a persisted session", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "smith-session-delete-"));
+    temporaryDirectories.push(directory);
+    const workspace = await openWorkspace(directory);
+    const store = new SessionStore(workspace);
+    const first = await store.create("test-model");
+    const second = await store.create("test-model");
+
+    await store.delete(second.id);
+
+    await expect(store.load(second.id)).rejects.toThrow(`Session not found: ${second.id}`);
+    await expect(store.list()).resolves.toEqual([expect.objectContaining({ id: first.id })]);
+  });
+
   test("branches a session at a prompt boundary", async () => {
     const directory = await mkdtemp(join(tmpdir(), "smith-session-branch-"));
     temporaryDirectories.push(directory);

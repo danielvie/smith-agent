@@ -9,20 +9,23 @@ import type { SmithEvent } from "../src/protocol";
 
 const temporaryDirectories: string[] = [];
 const servers: UiServerHandle[] = [];
-const originalApiKey = process.env.API_KEY_FIREWORKS;
+const originalBcaiApiKey = process.env.UDAL_PAT;
+const originalFireworksApiKey = process.env.API_KEY_FIREWORKS;
 
 afterEach(async () => {
   for (const server of servers.splice(0)) server.stop();
   await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
-  if (originalApiKey === undefined) delete process.env.API_KEY_FIREWORKS;
-  else process.env.API_KEY_FIREWORKS = originalApiKey;
+  if (originalBcaiApiKey === undefined) delete process.env.UDAL_PAT;
+  else process.env.UDAL_PAT = originalBcaiApiKey;
+  if (originalFireworksApiKey === undefined) delete process.env.API_KEY_FIREWORKS;
+  else process.env.API_KEY_FIREWORKS = originalFireworksApiKey;
 });
 
 describe("browser server", () => {
   test("serves the UI and state over loopback HTTP", async () => {
     const directory = await mkdtemp(join(tmpdir(), "smith-ui-"));
     temporaryDirectories.push(directory);
-    process.env.API_KEY_FIREWORKS = "test-fireworks-key";
+    process.env.UDAL_PAT = "test-bcai-key";
 
     const server = await startUiServer({ workspacePath: directory, port: 0 });
     servers.push(server);
@@ -34,7 +37,7 @@ describe("browser server", () => {
     const stateResponse = await fetch(new URL("api/state", server.url));
     expect(stateResponse.status).toBe(200);
     expect(await stateResponse.json()).toMatchObject({
-      model: "accounts/fireworks/models/kimi-k2p6",
+      model: "gpt-5.6-luna",
       running: false,
       queuedPrompts: [],
       contextUsage: { tokens: 0, contextWindow: expect.any(Number), estimated: false },
@@ -53,7 +56,7 @@ describe("browser server", () => {
   test("creates and switches persisted UI sessions", async () => {
     const directory = await mkdtemp(join(tmpdir(), "smith-ui-sessions-"));
     temporaryDirectories.push(directory);
-    process.env.API_KEY_FIREWORKS = "test-fireworks-key";
+    process.env.UDAL_PAT = "test-bcai-key";
 
     const server = await startUiServer({ workspacePath: directory, port: 0 });
     servers.push(server);
@@ -76,10 +79,41 @@ describe("browser server", () => {
     expect((await (await fetch(new URL("api/state", server.url))).json()).sessionId).toBe(initialState.sessionId);
   });
 
+  test("deletes the active session and keeps one session available", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "smith-ui-delete-"));
+    temporaryDirectories.push(directory);
+    process.env.UDAL_PAT = "test-bcai-key";
+
+    const server = await startUiServer({ workspacePath: directory, port: 0 });
+    servers.push(server);
+    const initialState = await (await fetch(new URL("api/state", server.url))).json() as { sessionId: string; sessions: Array<{ id: string }> };
+    await fetch(new URL("api/session/new", server.url), { method: "POST", body: "{}" });
+    const createdState = await (await fetch(new URL("api/state", server.url))).json() as { sessionId: string };
+
+    const deleted = await fetch(new URL("api/session/delete", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId: createdState.sessionId }),
+    });
+    expect(deleted.status).toBe(202);
+    const restoredState = await (await fetch(new URL("api/state", server.url))).json() as { sessionId: string; sessions: Array<{ id: string }> };
+    expect(restoredState.sessionId).toBe(initialState.sessionId);
+    expect(restoredState.sessions).toHaveLength(1);
+
+    await fetch(new URL("api/session/delete", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId: restoredState.sessionId }),
+    });
+    const replacementState = await (await fetch(new URL("api/state", server.url))).json() as { sessionId: string; sessions: Array<{ id: string }> };
+    expect(replacementState.sessionId).not.toBe(restoredState.sessionId);
+    expect(replacementState.sessions).toHaveLength(1);
+  });
+
   test("renames a persisted UI session", async () => {
     const directory = await mkdtemp(join(tmpdir(), "smith-ui-rename-"));
     temporaryDirectories.push(directory);
-    process.env.API_KEY_FIREWORKS = "test-fireworks-key";
+    process.env.UDAL_PAT = "test-bcai-key";
 
     const server = await startUiServer({ workspacePath: directory, port: 0 });
     servers.push(server);
@@ -140,7 +174,7 @@ describe("browser server", () => {
   test("rejects cancellation for unknown queued prompts", async () => {
     const directory = await mkdtemp(join(tmpdir(), "smith-ui-"));
     temporaryDirectories.push(directory);
-    process.env.API_KEY_FIREWORKS = "test-fireworks-key";
+    process.env.UDAL_PAT = "test-bcai-key";
 
     const server = await startUiServer({ workspacePath: directory, port: 0 });
     servers.push(server);
@@ -156,7 +190,7 @@ describe("browser server", () => {
   test("rejects approval decisions for unknown requests", async () => {
     const directory = await mkdtemp(join(tmpdir(), "smith-ui-"));
     temporaryDirectories.push(directory);
-    process.env.API_KEY_FIREWORKS = "test-fireworks-key";
+    process.env.UDAL_PAT = "test-bcai-key";
 
     const server = await startUiServer({ workspacePath: directory, port: 0 });
     servers.push(server);

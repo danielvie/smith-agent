@@ -86,6 +86,19 @@ describe("workspace boundary", () => {
     expect(result.cwd).toBe(".");
   });
 
+  test("runs an external skill helper by absolute path", async () => {
+    const { workspace } = await makeWorkspace();
+    const skillDirectory = await mkdtemp(join(tmpdir(), "smith-skill-"));
+    temporaryDirectories.push(skillDirectory);
+    const scriptPath = join(skillDirectory, "check.mjs");
+    await writeFile(scriptPath, "console.log('skill-ok');\n");
+
+    const result = await workspace.runCommand(`node \"${scriptPath}\"`, ".", undefined, 5_000);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("skill-ok");
+  });
+
   test("reports a timeout when a child keeps command output open", async () => {
     if (process.platform === "win32") return;
     const { workspace } = await makeWorkspace();

@@ -2,35 +2,41 @@
 
 Windows-first proof of concept for a local assistant agent.
 
-The first slice is intentionally small: a Bun executable, a Pi-backed agent adapter, the Fireworks Kimi K2.6 model, and terminal/browser clients operating on one configurable workspace root.
+The first slice is intentionally small: a Bun executable, a Pi-backed agent adapter, BCAI and Fireworks model providers, and terminal/browser clients operating on one configurable workspace root.
 
 ## Development
 
 Requirements:
 
-- Bun 1.4+
+- Bun 1.4+ runtime
+- pnpm 11+
 - Task 3+
-- Fireworks API key
+- BCAI UDAL token in `UDAL_PAT`, or a Fireworks API key when using Fireworks
 - A browser for UI mode
 
 ```powershell
-$env:API_KEY_FIREWORKS = "<your key>"
+$env:UDAL_PAT = "<your BCAI UDAL token>"
+task init
 task run
 ```
 
 The current directory is the workspace by default. Use `--workspace <path>` when starting from another folder.
 
 ```powershell
-bun run src/cli.ts --workspace C:\path\to\project
+pnpm run run -- --workspace C:\path\to\project
 ```
 
 Model settings live in `smith.config.json` at the workspace root:
 
 ```json
 {
-  "model": "accounts/fireworks/models/kimi-k2p6"
+  "model": "gpt-5.6-luna"
 }
 ```
+
+BCAI is the default provider. It sends `gpt-5.6-luna` requests to `https://bcai-openai-proxy-test.taspre-phx.apps.boeing.com/v1` and reads its UDAL token from `UDAL_PAT`.
+
+Fireworks remains available. Select a Fireworks model such as `accounts/fireworks/models/kimi-k2p6` and set `API_KEY_FIREWORKS` or `FIREWORKS_API_KEY`.
 
 MCP servers live in `mcp.json` at the workspace root:
 
@@ -46,7 +52,11 @@ MCP servers live in `mcp.json` at the workspace root:
 }
 ```
 
-Use `--config <relative-path>` or `--mcp-config <relative-path>` to select another config file. `SMITH_MODEL` overrides the model for one session. Keep `API_KEY_FIREWORKS` in the environment, not in a config file.
+Use `--config <relative-path>` or `--mcp-config <relative-path>` to select another config file. `SMITH_MODEL` overrides the model for one session. Keep `UDAL_PAT` and Fireworks keys in the environment, not in a config file.
+
+## Personal instructions and NIMT
+
+Smith loads `~/.agents/AGENTS.md` into each new agent session. For NIMT work items, test artifacts, or the meetings log, it exposes a `load_skill` tool that loads `~/.agents/skills/nimt-project/SKILL.md` only when needed. The skill's helper-script directory is returned with its instructions.
 
 The current slice includes real workspace automation through `list_files`, `read_file`, `search`, `write_file`, `edit_file`, and approved `run_command` tools, plus optional Chrome DevTools MCP tools for web research and browser interaction. Reads and local search stay inside the canonical workspace root. Writes, edits, shell commands, and browser actions ask for approval.
 
@@ -68,11 +78,11 @@ The rule applies to every future call of that tool in the current workspace. Rem
 
 Smith stores resumable sessions under `.smith/sessions/`. It resumes the most recently updated session by default. Session files contain the model transcript and UI history, and `.smith/` is ignored by Git because conversations can contain sensitive data.
 
-The UI has a session picker and a New button. In the CLI:
+The UI has a session picker plus New and Delete buttons. Delete confirms before removing the active session and creates a replacement when the last session is removed. In the CLI:
 
 ```powershell
-bun run src/cli.ts --new-session
-bun run src/cli.ts --session <session-id>
+pnpm run run -- --new-session
+pnpm run run -- --session <session-id>
 ```
 
 While running the CLI, use `/sessions`, `/new`, or `/resume <session-id>` to switch sessions. Switching is disabled while a run is active.
@@ -90,7 +100,7 @@ task ui
 Or run it without opening a browser automatically:
 
 ```powershell
-bun run src/cli.ts --ui --no-open --port 3210
+pnpm run ui -- --no-open --port 3210
 ```
 
 The UI binds to `127.0.0.1`, streams events with SSE, queues prompts sent during an active run, and supports aborts, tool approvals, Markdown, LaTeX, and JSON ECharts blocks. Queued prompts can be edited or canceled before execution:
@@ -111,7 +121,7 @@ Run the live integration check with:
 
 ```powershell
 $env:SMITH_MCP_INTEGRATION = "1"
-bun test tests/mcp.integration.test.ts
+pnpm run test -- tests/mcp.integration.test.ts
 ```
 
 The check navigates to a Google search through Smith's MCP bridge and reads the returned page text. With the current config, Chrome must be reachable at `http://127.0.0.1:9222` before running it.

@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
@@ -122,6 +122,16 @@ export class SessionStore {
     if (record.title === nextTitle) return;
     record.title = nextTitle;
     await this.save(record);
+  }
+
+  async delete(id: string): Promise<void> {
+    await this.read(id);
+    await this.writeQueue;
+    try {
+      await unlink(join(this.directory, `${id}.json`));
+    } catch (error) {
+      throw new SessionError(`Could not delete session ${id}: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   private async listRecords(): Promise<SessionRecord[]> {

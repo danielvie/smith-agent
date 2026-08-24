@@ -12,57 +12,55 @@ tasks:
     desc: Init the Smith Agent CLI in the current directory
     interactive: true
     cmds:
-      - bun install
+      - pnpm install --frozen-lockfile --registry=https://registry.npmjs.org --ignore-scripts
 
   run:
     desc: Run the Smith Agent CLI in the current directory
     interactive: true
     cmds:
-      - bun run src/cli.ts
+      - pnpm run run
 
   ui:
     desc: Start the local browser UI
     interactive: true
     cmds:
-      - bun run src/cli.ts --ui
+      - pnpm run ui
 
   ui:prototype:
     desc: Start the throwaway layout prototype (variants A-R, fixture data)
     interactive: true
     cmds:
-      - bun run src/web/prototype/serve.ts
+      - pnpm run ui:prototype
 
   ui:verify:
     desc: Render the real UI against a scripted event stream (no agent, no API key)
     interactive: true
     cmds:
-      - bun run src/web/prototype/verify.ts
+      - pnpm run ui:verify
 
 
   test:
     desc: Run the automated tests
     cmds:
-      - bun test
+      - pnpm run test
 
   check:
     desc: Type-check the TypeScript sources
     cmds:
-      - bun run check
+      - pnpm run check
 
   build:windows:
     desc: Build the Windows x64 standalone executable
     cmds:
-      - bun build --compile --target=bun-windows-x64 src/cli.ts --outfile dist/smith-windows-x64.exe
+      - pnpm run build:windows
 
   build:targets:
     desc: Build the current target artifacts for Windows, Linux, and macOS ARM64
     cmds:
-      - bun build --compile --target=bun-windows-x64 src/cli.ts --outfile dist/smith-windows-x64.exe
-      - bun build --compile --target=bun-linux-x64 src/cli.ts --outfile dist/smith-linux-x64
-      - bun build --compile --target=bun-darwin-arm64 src/cli.ts --outfile dist/smith-darwin-arm64
+      - pnpm run build:targets
 
   clean:
     desc: Remove build artifacts and dependencies
     cmds:
       - >-
-        bun -e "import { rm } from 'node:fs/promises'; await rm('dist', { recursive: true, force: true }); await rm('node_modules', { recursive: true, force: true }); await rm('bun.lock', { force: true });"
+        node -e "import { rm } from 'node:fs/promises'; await rm('dist', { recursive: true, force: true }); await rm('node_modules', { recursive: true, force: true }); await rm('pnpm-lock.yaml', { force: true });"

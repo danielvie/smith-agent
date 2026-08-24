@@ -185,7 +185,8 @@ button:disabled {
 }
 
 .session-picker,
-.bar-new {
+.bar-new,
+.bar-delete {
   max-width: 180px;
   padding: 3px 8px;
   border: 1px solid var(--line-2);
@@ -196,9 +197,21 @@ button:disabled {
   font-size: 11px;
 }
 
-.bar-new {
+.bar-new,
+.bar-delete {
   margin-left: 5px;
+}
+
+.bar-new {
   color: var(--accent);
+}
+
+.bar-delete {
+  color: var(--danger);
+}
+
+.bar-delete:disabled {
+  color: var(--ink-5);
 }
 
 .bar-abort {
@@ -503,9 +516,19 @@ button:disabled {
   display: none;
 }
 
+.app[data-density="digest"] .node.node-expanded .node-body {
+  display: block;
+  margin-top: 10px;
+  padding: 11px 0 4px;
+  border-top: 1px solid var(--line);
+}
+
 .app[data-density="digest"] .node-row {
   position: relative;
-  display: block;
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
   font-family: var(--mono);
   font-size: 12px;
   line-height: 1.5;
@@ -612,6 +635,32 @@ button:disabled {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.node-toggle {
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.node-toggle:hover .node-summary,
+.node-toggle:focus-visible .node-summary {
+  color: var(--ink);
+}
+
+.node-toggle:focus-visible {
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.node-disclosure {
+  flex-shrink: 0;
+  color: var(--ink-4);
+  font-size: 13px;
+  line-height: 1;
 }
 
 /* ---------- node contents ---------- */

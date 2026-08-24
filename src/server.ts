@@ -302,6 +302,17 @@ export async function startUiServer(options: UiServerOptions = {}): Promise<UiSe
           events.publish(currentState());
           return json({ accepted: true, sessionId: record.id }, 202);
         }
+        if (url.pathname === "/api/session/delete") {
+          if (activeRun) return json({ error: "Cannot delete a session while a run is active." }, 409);
+          if (typeof body.sessionId !== "string") return json({ error: "sessionId is required." }, 400);
+          if (body.sessionId !== activeSessionRecord.id) return json({ error: "Only the active session can be deleted." }, 409);
+          await sessionStore.delete(body.sessionId);
+          const record = await sessionStore.latest() ?? await sessionStore.create(selectedModelId);
+          attachSession(record);
+          sessionSummaries = await sessionStore.list();
+          events.publish(currentState());
+          return json({ accepted: true, deletedSessionId: body.sessionId, sessionId: record.id }, 202);
+        }
         if (url.pathname === "/api/session/rename") {
           if (typeof body.title !== "string") return json({ error: "title is required." }, 400);
           await sessionStore.setTitle(activeSessionRecord, body.title);

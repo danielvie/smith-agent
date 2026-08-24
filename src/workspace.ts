@@ -366,7 +366,7 @@ export class Workspace {
 
     const cwdPath = await this.existingPath(relativeCwd, "directory");
     const boundedTimeout = Math.max(1, Math.min(timeoutMs, MAX_COMMAND_TIMEOUT_MS));
-    const commandLine = process.platform === "win32" ? ["cmd.exe", "/d", "/s", "/c", command] : ["/bin/sh", "-lc", command];
+    const commandLine = process.platform === "win32" ? ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command] : ["/bin/sh", "-lc", command];
     const processHandle = Bun.spawn(commandLine, { cwd: cwdPath, stdout: "pipe", stderr: "pipe" });
     let timedOut = false;
     const termination = new AbortController();

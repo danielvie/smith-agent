@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { AgentEvent, AgentMessage } from "@earendil-works/pi-agent-core";
 import { AgentConfigurationError, calculateContextUsage, createWorkspaceTools, mapPiEvent, SmithAgentSession } from "../src/agent";
+import { BCAI_API_URL, BCAI_MODEL_ID, bcaiProvider } from "../src/providers/bcai";
 import { openWorkspace } from "../src/workspace";
 
 const temporaryDirectories: string[] = [];
@@ -49,8 +50,8 @@ describe("Smith agent adapter", () => {
     const directory = await mkdtemp(join(tmpdir(), "smith-agent-context-"));
     temporaryDirectories.push(directory);
     const workspace = await openWorkspace(directory);
-    const previousKey = process.env.API_KEY_FIREWORKS;
-    process.env.API_KEY_FIREWORKS = "test-fireworks-key";
+    const previousKey = process.env.UDAL_PAT;
+    process.env.UDAL_PAT = "test-bcai-key";
 
     try {
       const session = SmithAgentSession.create({ workspace });
@@ -58,8 +59,8 @@ describe("Smith agent adapter", () => {
       expect(session.contextUsage.tokens).toBe(0);
       expect(session.contextUsage.estimated).toBe(false);
     } finally {
-      if (previousKey === undefined) delete process.env.API_KEY_FIREWORKS;
-      else process.env.API_KEY_FIREWORKS = previousKey;
+      if (previousKey === undefined) delete process.env.UDAL_PAT;
+      else process.env.UDAL_PAT = previousKey;
     }
   });
 
@@ -110,43 +111,65 @@ describe("Smith agent adapter", () => {
     expect(mapPiEvent(event)).toEqual([{ type: "error", message: "provider failed" }]);
   });
 
-  test("uses the Fireworks environment key and Kimi K2.6 by default", async () => {
+  test("configures BCAI with GPT-5.6 Luna and the proxy URL", () => {
+    const model = bcaiProvider().getModels()[0];
+
+    expect(model.id).toBe(BCAI_MODEL_ID);
+    expect(model.provider).toBe("bcai");
+    expect(model.baseUrl).toBe(BCAI_API_URL);
+    expect(model.api).toBe("openai-responses");
+  });
+
+  test("uses the BCAI environment key and GPT-5.6 Luna by default", async () => {
     const directory = await mkdtemp(join(tmpdir(), "smith-agent-"));
     temporaryDirectories.push(directory);
     const workspace = await openWorkspace(directory);
-    const previousKey = process.env.API_KEY_FIREWORKS;
+    const previousKey = process.env.UDAL_PAT;
     const previousModel = process.env.SMITH_MODEL;
-    process.env.API_KEY_FIREWORKS = "test-fireworks-key";
+    process.env.UDAL_PAT = "test-bcai-key";
     delete process.env.SMITH_MODEL;
 
     try {
       const session = SmithAgentSession.create({ workspace });
-      expect(session.modelId).toBe("accounts/fireworks/models/kimi-k2p6");
+      expect(session.modelId).toBe(BCAI_MODEL_ID);
     } finally {
-      if (previousKey === undefined) delete process.env.API_KEY_FIREWORKS;
-      else process.env.API_KEY_FIREWORKS = previousKey;
+      if (previousKey === undefined) delete process.env.UDAL_PAT;
+      else process.env.UDAL_PAT = previousKey;
       if (previousModel === undefined) delete process.env.SMITH_MODEL;
       else process.env.SMITH_MODEL = previousModel;
     }
   });
 
-  test("fails early when Fireworks credentials are missing", async () => {
+  test("fails early when BCAI credentials are missing", async () => {
     const directory = await mkdtemp(join(tmpdir(), "smith-agent-"));
     temporaryDirectories.push(directory);
     const workspace = await openWorkspace(directory);
-    const previousApiKey = process.env.API_KEY_FIREWORKS;
-    const previousPiKey = process.env.FIREWORKS_API_KEY;
-    delete process.env.API_KEY_FIREWORKS;
-    delete process.env.FIREWORKS_API_KEY;
+    const previousKey = process.env.UDAL_PAT;
+    delete process.env.UDAL_PAT;
 
     try {
       expect(() => SmithAgentSession.create({ workspace })).toThrow(AgentConfigurationError);
-      expect(() => SmithAgentSession.create({ workspace })).toThrow("API_KEY_FIREWORKS is required");
+      expect(() => SmithAgentSession.create({ workspace })).toThrow("UDAL_PAT is required");
     } finally {
-      if (previousApiKey === undefined) delete process.env.API_KEY_FIREWORKS;
-      else process.env.API_KEY_FIREWORKS = previousApiKey;
-      if (previousPiKey === undefined) delete process.env.FIREWORKS_API_KEY;
-      else process.env.FIREWORKS_API_KEY = previousPiKey;
+      if (previousKey === undefined) delete process.env.UDAL_PAT;
+      else process.env.UDAL_PAT = previousKey;
+    }
+  });
+
+  test("keeps Fireworks available for explicit model selection", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "smith-agent-"));
+    temporaryDirectories.push(directory);
+    const workspace = await openWorkspace(directory);
+    const previousKey = process.env.API_KEY_FIREWORKS;
+    process.env.API_KEY_FIREWORKS = "test-fireworks-key";
+
+    try {
+      const modelId = "accounts/fireworks/models/kimi-k2p6";
+      const session = SmithAgentSession.create({ workspace, modelId });
+      expect(session.modelId).toBe(modelId);
+    } finally {
+      if (previousKey === undefined) delete process.env.API_KEY_FIREWORKS;
+      else process.env.API_KEY_FIREWORKS = previousKey;
     }
   });
 });

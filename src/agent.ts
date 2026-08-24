@@ -3,12 +3,14 @@ import { Agent, type AgentEvent, type AgentMessage, type AgentTool, type AgentTo
 import { createModels, Type, type AssistantMessage, type Static } from "@earendil-works/pi-ai";
 import { fireworksProvider } from "@earendil-works/pi-ai/providers/fireworks";
 import type { BeforeToolCallContext } from "@earendil-works/pi-agent-core";
+import { BCAI_API_KEY_ENV, BCAI_MODEL_ID, BCAI_PROVIDER_ID, bcaiProvider } from "./providers/bcai";
+import { NIMT_PROJECT_SKILL_NAME, loadGlobalAgentInstructions, loadNimtProjectSkill } from "./instructions";
 import type { ApprovalHandler, ApprovalKind, ApprovalRequest, ContextUsage, SmithEvent } from "./protocol";
 import { DEFAULT_MAX_SEARCH_MATCHES, MAX_COMMAND_TIMEOUT_MS, type SearchResult, type Workspace, type WorkspaceEntry } from "./workspace";
 
 export type { ApprovalHandler, ApprovalRequest, SmithEvent } from "./protocol";
 
-export const DEFAULT_MODEL_ID = "accounts/fireworks/models/kimi-k2p6";
+export const DEFAULT_MODEL_ID = BCAI_MODEL_ID;
 const PROTECTED_TOOLS = new Map<string, ApprovalKind>([
   ["write_file", "write"],
   ["edit_file", "write"],
@@ -73,6 +75,27 @@ function toolResult<T extends object>(details: T): AgentToolResult<T> {
     content: [{ type: "text", text: JSON.stringify(details, null, 2) }],
     details,
   };
+}
+
+const loadSkillParameters = Type.Object({
+  name: Type.Literal(NIMT_PROJECT_SKILL_NAME),
+});
+type LoadSkillParameters = Static<typeof loadSkillParameters>;
+
+export function createInstructionTools(): AgentTool[] {
+  const loadSkillTool: AgentTool<typeof loadSkillParameters, { name: string; directory?: string; instructions?: string; commands?: { ado: string; meetingsLog: string }; error?: string }> = {
+    name: "load_skill",
+    label: "Load skill",
+    description: "Load the NIMT project instructions when the request concerns NIMT work items, test artifacts, or the meetings log.",
+    parameters: loadSkillParameters,
+    async execute(_toolCallId, params: LoadSkillParameters) {
+      const skill = loadNimtProjectSkill();
+      if (!skill) return toolResult({ name: params.name, error: `Skill not found: ${params.name}.` });
+      return toolResult({ name: params.name, directory: skill.directory, instructions: skill.instructions, commands: skill.commands });
+    },
+  };
+
+  return [loadSkillTool];
 }
 
 function normalizeEntries(entries: WorkspaceEntry[]): WorkspaceEntry[] {
@@ -175,7 +198,7 @@ export function createWorkspaceTools(workspace: Workspace): AgentTool[] {
   const runCommandTool: AgentTool<typeof runCommandParameters, { command: string; cwd: string; exitCode: number; stdout: string; stderr: string; stdoutTruncated: boolean; stderrTruncated: boolean }> = {
     name: "run_command",
     label: "Run command",
-    description: "Run a shell command in a workspace directory and return bounded stdout and stderr. Requires approval.",
+    description: "Run a shell command in a workspace directory and return bounded stdout and stderr. Commands may use absolute helper-script paths returned by load_skill. Requires approval.",
     parameters: runCommandParameters,
     async execute(_toolCallId, params: RunCommandParameters, signal) {
       return toolResult(await workspace.runCommand(params.command, params.cwd ?? ".", signal, params.timeout_ms));
@@ -257,18 +280,23 @@ export class SmithAgentSession {
   }
 
   static create(options: SmithAgentOptions): SmithAgentSession {
-    const apiKey = options.apiKey?.trim() || process.env.API_KEY_FIREWORKS?.trim() || process.env.FIREWORKS_API_KEY?.trim();
-    if (!apiKey) {
-      throw new AgentConfigurationError("API_KEY_FIREWORKS is required. Set it in the environment or pass apiKey.");
-    }
-
     const modelId = options.modelId ?? process.env.SMITH_MODEL ?? DEFAULT_MODEL_ID;
     const models = createModels();
+    models.setProvider(bcaiProvider());
     models.setProvider(fireworksProvider());
-    const model = models.getModel("fireworks", modelId);
-    if (!model) throw new AgentConfigurationError(`Fireworks model not found: ${modelId}.`);
+    const model = models.getModel(BCAI_PROVIDER_ID, modelId) ?? models.getModel("fireworks", modelId);
+    if (!model) throw new AgentConfigurationError(`Model not found in BCAI or Fireworks: ${modelId}.`);
 
-    const tools = [...createWorkspaceTools(options.workspace), ...(options.extraTools ?? [])];
+    const apiKey = options.apiKey?.trim() || (model.provider === BCAI_PROVIDER_ID
+      ? process.env[BCAI_API_KEY_ENV]?.trim()
+      : process.env.API_KEY_FIREWORKS?.trim() || process.env.FIREWORKS_API_KEY?.trim());
+    if (!apiKey) {
+      const environmentVariable = model.provider === BCAI_PROVIDER_ID ? BCAI_API_KEY_ENV : "API_KEY_FIREWORKS";
+      throw new AgentConfigurationError(`${environmentVariable} is required. Set it in the environment or pass apiKey.`);
+    }
+
+    const globalAgentInstructions = loadGlobalAgentInstructions();
+    const tools = [...createWorkspaceTools(options.workspace), ...createInstructionTools(), ...(options.extraTools ?? [])];
     const protectedToolKinds = new Map(PROTECTED_TOOLS);
     for (const [toolName, kind] of options.protectedToolKinds ?? []) protectedToolKinds.set(toolName, kind);
     const approve = options.approve ?? (async () => "deny" as const);
@@ -279,9 +307,11 @@ export class SmithAgentSession {
           `The workspace root is ${options.workspace.root}.`,
           "Use the workspace tools instead of inventing file contents or command output.",
           "Use search when locating code or text. When Chrome DevTools tools are available, use the chrome_ tools for web searches and interactive or login-dependent browsing. If no browser tools are available, say so instead of claiming to browse.",
-          "Paths passed to tools must be relative to the workspace root.",
+          "File paths passed to workspace file tools must be relative to the workspace root.",
+          `Use the ${NIMT_PROJECT_SKILL_NAME} skill for NIMT work items, test artifacts, or the meetings log. Call load_skill before acting on those requests. When the skill references a relative path, resolve it against the returned skill directory and use that absolute path in run_command. The returned command prefixes are ready to use.`,
           "Explain what you changed and report command results accurately.",
-          "Use Markdown and LaTeX when they improve the answer. In browser mode, use fenced chart blocks with JSON ECharts options when a chart helps."
+          "Use Markdown and LaTeX when they improve the answer. In browser mode, use fenced chart blocks with JSON ECharts options when a chart helps.",
+          ...(globalAgentInstructions ? [`\nPersonal agent instructions:\n${globalAgentInstructions}`] : []),
         ].join("\n"),
         model,
         tools,

@@ -2,6 +2,7 @@
   "name": "smith-agent",
   "version": "0.1.0",
   "private": true,
+  "packageManager": "pnpm@11.20.0",
   "type": "module",
   "description": "Windows-first POC for a local assistant agent",
   "scripts": {
@@ -10,6 +11,7 @@
     "test": "bun test",
     "check": "tsc --noEmit",
     "build:windows": "bun build --compile --target=bun-windows-x64 src/cli.ts --outfile dist/smith-windows-x64.exe",
+    "build:targets": "bun build --compile --target=bun-windows-x64 src/cli.ts --outfile dist/smith-windows-x64.exe && bun build --compile --target=bun-linux-x64 src/cli.ts --outfile dist/smith-linux-x64 && bun build --compile --target=bun-darwin-arm64 src/cli.ts --outfile dist/smith-darwin-arm64",
     "ui:prototype": "bun run src/web/prototype/serve.ts",
     "ui:verify": "bun run src/web/prototype/verify.ts"
   },
