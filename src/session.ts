@@ -116,9 +116,11 @@ export class SessionStore {
   }
 
   async setTitle(record: SessionRecord, title: string): Promise<void> {
-    const normalized = title.replace(/\s+/gu, " ").trim().slice(0, 160);
-    if (!normalized || record.title !== "New session") return;
-    record.title = normalized;
+    const normalized = title.replace(/\s+/gu, " ").trim();
+    if (!normalized) throw new SessionError("Session title must not be empty.");
+    const nextTitle = normalized.slice(0, 160);
+    if (record.title === nextTitle) return;
+    record.title = nextTitle;
     await this.save(record);
   }
 

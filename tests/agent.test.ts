@@ -2,8 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import type { AgentEvent } from "@earendil-works/pi-agent-core";
-import { AgentConfigurationError, createWorkspaceTools, mapPiEvent, SmithAgentSession } from "../src/agent";
+import type { AgentEvent, AgentMessage } from "@earendil-works/pi-agent-core";
+import { AgentConfigurationError, calculateContextUsage, createWorkspaceTools, mapPiEvent, SmithAgentSession } from "../src/agent";
 import { openWorkspace } from "../src/workspace";
 
 const temporaryDirectories: string[] = [];
@@ -13,6 +13,56 @@ afterEach(async () => {
 });
 
 describe("Smith agent adapter", () => {
+  test("uses provider usage as the context baseline and estimates trailing messages", () => {
+    const assistant = {
+      role: "assistant",
+      content: [],
+      usage: { input: 20_000, output: 4_000, cacheRead: 0, cacheWrite: 0, totalTokens: 24_000 },
+      stopReason: "stop",
+      timestamp: 2,
+    } as unknown as AgentMessage;
+    const trailing = { role: "user", content: "follow-up", timestamp: 3 } as unknown as AgentMessage;
+    const trailingTokens = Math.ceil(JSON.stringify(trailing).length / 4);
+
+    expect(calculateContextUsage([assistant, trailing], 262_000)).toEqual({
+      tokens: 24_000 + trailingTokens,
+      contextWindow: 262_000,
+      estimated: true,
+    });
+  });
+
+  test("estimates all messages when provider usage is unavailable", () => {
+    const messages = [
+      { role: "user", content: "hello", timestamp: 1 },
+      { role: "toolResult", content: [{ type: "text", text: "world" }], timestamp: 2 },
+    ] as unknown as AgentMessage[];
+    const expectedTokens = messages.reduce((total, message) => total + Math.ceil(JSON.stringify(message).length / 4), 0);
+
+    expect(calculateContextUsage(messages, 128_000)).toEqual({
+      tokens: expectedTokens,
+      contextWindow: 128_000,
+      estimated: true,
+    });
+  });
+
+  test("exposes the active model context window", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "smith-agent-context-"));
+    temporaryDirectories.push(directory);
+    const workspace = await openWorkspace(directory);
+    const previousKey = process.env.API_KEY_FIREWORKS;
+    process.env.API_KEY_FIREWORKS = "test-fireworks-key";
+
+    try {
+      const session = SmithAgentSession.create({ workspace });
+      expect(session.contextUsage.contextWindow).toBeGreaterThan(0);
+      expect(session.contextUsage.tokens).toBe(0);
+      expect(session.contextUsage.estimated).toBe(false);
+    } finally {
+      if (previousKey === undefined) delete process.env.API_KEY_FIREWORKS;
+      else process.env.API_KEY_FIREWORKS = previousKey;
+    }
+  });
+
   test("exposes and executes workspace tools", async () => {
     const directory = await mkdtemp(join(tmpdir(), "smith-agent-"));
     temporaryDirectories.push(directory);

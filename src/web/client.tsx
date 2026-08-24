@@ -292,6 +292,88 @@ function Composer({
   );
 }
 
+function formatTokenCount(tokens: number): string {
+  const rounded = Math.max(0, Math.round(tokens));
+  if (rounded < 1_000) return String(rounded);
+  if (rounded < 1_000_000) return `${Math.round(rounded / 100) / 10}k`;
+  return `${Math.round(rounded / 100_000) / 10}m`;
+}
+
+function SessionTitle({
+  session,
+  contextUsage,
+  editing,
+  draft,
+  setDraft,
+  startRename,
+  saveRename,
+  cancelRename,
+}: {
+  session?: UiStateEvent["sessions"][number];
+  contextUsage?: UiStateEvent["contextUsage"];
+  editing: boolean;
+  draft: string;
+  setDraft: (value: string) => void;
+  startRename: () => void;
+  saveRename: () => void | Promise<void>;
+  cancelRename: () => void;
+}) {
+  const contextRatio = contextUsage && contextUsage.contextWindow > 0 ? contextUsage.tokens / contextUsage.contextWindow : 0;
+  const contextLevel = contextRatio >= 0.9 ? "danger" : contextRatio >= 0.75 ? "warning" : "normal";
+  const contextPercent = Math.min(100, Math.max(0, contextRatio * 100));
+  const contextValue = contextUsage ? `${contextUsage.estimated ? "Estimated " : ""}context usage: ${formatTokenCount(contextUsage.tokens)} of ${formatTokenCount(contextUsage.contextWindow)} tokens` : "";
+
+  return (
+    <section className="session-title-strip">
+      <div className="session-title-in">
+        <span className="session-title-label">Session</span>
+        {editing ? (
+          <form className="session-title-form" onSubmit={(event) => { event.preventDefault(); void saveRename(); }}>
+            <input
+              aria-label="Session name"
+              value={draft}
+              maxLength={160}
+              autoFocus
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  cancelRename();
+                }
+              }}
+            />
+            <button type="submit" className="session-title-save">Save</button>
+            <button type="button" className="session-title-cancel" onClick={cancelRename}>Cancel</button>
+          </form>
+        ) : (
+          <>
+            <strong className="session-title-value">{session?.title ?? "New session"}</strong>
+            <button type="button" className="session-title-edit" onClick={startRename}>Edit name</button>
+          </>
+        )}
+        {session && <span className="session-title-meta">{session.messageCount} messages</span>}
+        {session && contextUsage && (
+          <div className={`session-context session-context-${contextLevel}`} title={contextValue}>
+            <span className="session-context-label">context</span>
+            <span
+              className="session-context-track"
+              role="progressbar"
+              aria-label="Context usage"
+              aria-valuemin={0}
+              aria-valuemax={contextUsage.contextWindow}
+              aria-valuenow={Math.min(contextUsage.tokens, contextUsage.contextWindow)}
+              aria-valuetext={contextValue}
+            >
+              <span className="session-context-fill" style={{ width: `${contextPercent}%` }} />
+            </span>
+            <span className="session-context-value">{contextUsage.estimated ? "~" : ""}{formatTokenCount(contextUsage.tokens)} / {formatTokenCount(contextUsage.contextWindow)}</span>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function Bar({
   state,
   density,
@@ -372,6 +454,8 @@ function App() {
     mcpServers: [],
   });
   const [error, setError] = useState<string | undefined>();
+  const [renamingSession, setRenamingSession] = useState(false);
+  const [sessionTitleDraft, setSessionTitleDraft] = useState("");
   const composerRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -487,6 +571,7 @@ function App() {
   }
 
   async function createSession() {
+    setRenamingSession(false);
     try {
       await post("/api/session/new");
     } catch (requestError) {
@@ -496,8 +581,37 @@ function App() {
 
   async function selectSession(sessionId: string) {
     if (!sessionId || sessionId === state.sessionId) return;
+    setRenamingSession(false);
     try {
       await post("/api/session/select", { sessionId });
+      setError(undefined);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : String(requestError));
+    }
+  }
+
+  function startRenameSession() {
+    const session = state.sessions.find((item) => item.id === state.sessionId);
+    setSessionTitleDraft(session?.title ?? "New session");
+    setError(undefined);
+    setRenamingSession(true);
+  }
+
+  function cancelRenameSession() {
+    setRenamingSession(false);
+    setSessionTitleDraft("");
+  }
+
+  async function saveRenameSession() {
+    const title = sessionTitleDraft.trim();
+    if (!title) {
+      setError("Session name cannot be empty.");
+      return;
+    }
+    try {
+      await post("/api/session/rename", { title });
+      setRenamingSession(false);
+      setSessionTitleDraft("");
       setError(undefined);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : String(requestError));
@@ -530,10 +644,21 @@ function App() {
   }
 
   const pending = approvals.filter((approval) => approval.status === "pending");
+  const activeSession = state.sessions.find((session) => session.id === state.sessionId);
 
   return (
     <main className="app" data-density={density}>
       <Bar state={state} density={density} setDensity={setDensity} abort={abort} createSession={createSession} selectSession={selectSession} />
+      <SessionTitle
+        session={activeSession}
+        contextUsage={state.contextUsage}
+        editing={renamingSession}
+        draft={sessionTitleDraft}
+        setDraft={setSessionTitleDraft}
+        startRename={startRenameSession}
+        saveRename={saveRenameSession}
+        cancelRename={cancelRenameSession}
+      />
       <Transcript
         nodes={nodes}
         approvals={pending}

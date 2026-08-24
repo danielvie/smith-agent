@@ -33,7 +33,13 @@ describe("browser server", () => {
 
     const stateResponse = await fetch(new URL("api/state", server.url));
     expect(stateResponse.status).toBe(200);
-    expect(await stateResponse.json()).toMatchObject({ model: "accounts/fireworks/models/kimi-k2p6", running: false, queuedPrompts: [], mcpServers: [] });
+    expect(await stateResponse.json()).toMatchObject({
+      model: "accounts/fireworks/models/kimi-k2p6",
+      running: false,
+      queuedPrompts: [],
+      contextUsage: { tokens: 0, contextWindow: expect.any(Number), estimated: false },
+      mcpServers: [],
+    });
 
     const eventsResponse = await fetch(new URL("events", server.url));
     expect(eventsResponse.headers.get("content-type")).toContain("text/event-stream");
@@ -68,6 +74,34 @@ describe("browser server", () => {
     });
     expect(resumed.status).toBe(202);
     expect((await (await fetch(new URL("api/state", server.url))).json()).sessionId).toBe(initialState.sessionId);
+  });
+
+  test("renames a persisted UI session", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "smith-ui-rename-"));
+    temporaryDirectories.push(directory);
+    process.env.API_KEY_FIREWORKS = "test-fireworks-key";
+
+    const server = await startUiServer({ workspacePath: directory, port: 0 });
+    servers.push(server);
+    const initialState = await (await fetch(new URL("api/state", server.url))).json() as { sessionId: string };
+    const response = await fetch(new URL("api/session/rename", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "  Research   prices  " }),
+    });
+
+    expect(response.status).toBe(202);
+    const state = await (await fetch(new URL("api/state", server.url))).json() as { sessions: Array<{ id: string; title: string }> };
+    expect(state.sessions.find((session) => session.id === initialState.sessionId)?.title).toBe("Research prices");
+    const store = new SessionStore(await openWorkspace(directory));
+    await expect(store.load(initialState.sessionId)).resolves.toMatchObject({ title: "Research prices" });
+
+    const invalid = await fetch(new URL("api/session/rename", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "   " }),
+    });
+    expect(invalid.status).toBe(400);
   });
 
   test("branches a persisted UI session before an edited prompt", async () => {

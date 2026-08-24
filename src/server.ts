@@ -7,7 +7,7 @@ import { branchSessionRecord, SessionStore, type SessionRecord } from "./session
 import { connectConfiguredChromeDevToolsMcp } from "./mcp";
 import { DEFAULT_CONFIG_PATH, loadSmithConfig } from "./config";
 import { DEFAULT_MCP_CONFIG_PATH, loadMcpConfig } from "./mcp-config";
-import type { ApprovalDecision, ApprovalState, McpServerState, QueuedPrompt, SessionSummary, SmithEvent, UiEvent, UiStateEvent } from "./protocol";
+import type { ApprovalDecision, ApprovalState, ContextUsage, McpServerState, QueuedPrompt, SessionSummary, SmithEvent, UiEvent, UiStateEvent } from "./protocol";
 import { openWorkspace, type Workspace } from "./workspace";
 
 export const DEFAULT_UI_PORT = 3210;
@@ -128,7 +128,7 @@ function messageFrom(body: Record<string, unknown>): string {
   return body.message;
 }
 
-function stateEvent(workspace: Workspace, model: string, configPath: string, sessionId: string, sessions: SessionSummary[], history: SmithEvent[], running: boolean, approvals: ApprovalState[], queuedPrompts: QueuedPrompt[], mcpServers: McpServerState[]): UiStateEvent {
+function stateEvent(workspace: Workspace, model: string, configPath: string, sessionId: string, sessions: SessionSummary[], history: SmithEvent[], running: boolean, approvals: ApprovalState[], queuedPrompts: QueuedPrompt[], contextUsage: ContextUsage, mcpServers: McpServerState[]): UiStateEvent {
   return {
     type: "state",
     workspace: workspace.root,
@@ -140,6 +140,7 @@ function stateEvent(workspace: Workspace, model: string, configPath: string, ses
     running,
     approvals,
     queuedPrompts: queuedPrompts.map((prompt) => ({ ...prompt })),
+    contextUsage,
     mcpServers: mcpServers.map((server) => ({ ...server })),
   };
 }
@@ -176,7 +177,7 @@ export async function startUiServer(options: UiServerOptions = {}): Promise<UiSe
   const mcpServers: McpServerState[] = chromeMcp ? [{ name: "chrome-devtools", toolCount: chromeMcp.tools.length }] : [];
   let events: SseHub;
 
-  const currentState = () => stateEvent(workspace, session.modelId, configPath, activeSessionRecord.id, sessionSummaries, activeSessionRecord.history, running, approvals.list(), queuedPrompts, mcpServers);
+  const currentState = () => stateEvent(workspace, session.modelId, configPath, activeSessionRecord.id, sessionSummaries, activeSessionRecord.history, running, approvals.list(), queuedPrompts, session.contextUsage, mcpServers);
   events = new SseHub(currentState);
 
   const createSession = (record: SessionRecord): SmithAgentSession => SmithAgentSession.create({
@@ -300,6 +301,13 @@ export async function startUiServer(options: UiServerOptions = {}): Promise<UiSe
           sessionSummaries = await sessionStore.list();
           events.publish(currentState());
           return json({ accepted: true, sessionId: record.id }, 202);
+        }
+        if (url.pathname === "/api/session/rename") {
+          if (typeof body.title !== "string") return json({ error: "title is required." }, 400);
+          await sessionStore.setTitle(activeSessionRecord, body.title);
+          sessionSummaries = await sessionStore.list();
+          events.publish(currentState());
+          return json({ accepted: true }, 202);
         }
         if (url.pathname === "/api/session/branch") {
           if (activeRun) return json({ error: "Cannot branch a session while a run is active." }, 409);

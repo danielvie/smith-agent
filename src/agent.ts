@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { Agent, type AgentEvent, type AgentMessage, type AgentTool, type AgentToolResult } from "@earendil-works/pi-agent-core";
-import { createModels, Type, type Static } from "@earendil-works/pi-ai";
+import { createModels, Type, type AssistantMessage, type Static } from "@earendil-works/pi-ai";
 import { fireworksProvider } from "@earendil-works/pi-ai/providers/fireworks";
 import type { BeforeToolCallContext } from "@earendil-works/pi-agent-core";
-import type { ApprovalHandler, ApprovalKind, ApprovalRequest, SmithEvent } from "./protocol";
+import type { ApprovalHandler, ApprovalKind, ApprovalRequest, ContextUsage, SmithEvent } from "./protocol";
 import { DEFAULT_MAX_SEARCH_MATCHES, MAX_COMMAND_TIMEOUT_MS, type SearchResult, type Workspace, type WorkspaceEntry } from "./workspace";
 
 export type { ApprovalHandler, ApprovalRequest, SmithEvent } from "./protocol";
@@ -26,6 +26,46 @@ export class AgentConfigurationError extends Error {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function assistantUsageTokens(message: AgentMessage): number | undefined {
+  if (message.role !== "assistant") return undefined;
+  const assistant = message as AssistantMessage;
+  if (assistant.stopReason === "error" || assistant.stopReason === "aborted") return undefined;
+  const usage = assistant.usage;
+  if (!usage) return undefined;
+  const reported = usage.totalTokens > 0
+    ? usage.totalTokens
+    : usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
+  return Number.isFinite(reported) && reported > 0 ? reported : undefined;
+}
+
+function estimateMessageTokens(message: AgentMessage): number {
+  return Math.ceil((JSON.stringify(message)?.length ?? 0) / 4);
+}
+
+export function calculateContextUsage(messages: AgentMessage[], contextWindow: number): ContextUsage {
+  let lastUsageIndex = -1;
+  let tokens = 0;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const usageTokens = assistantUsageTokens(messages[index]);
+    if (usageTokens === undefined) continue;
+    lastUsageIndex = index;
+    tokens = usageTokens;
+    break;
+  }
+
+  if (lastUsageIndex < 0) {
+    tokens = messages.reduce((total, message) => total + estimateMessageTokens(message), 0);
+    return { tokens, contextWindow, estimated: messages.length > 0 };
+  }
+
+  let estimated = false;
+  for (let index = lastUsageIndex + 1; index < messages.length; index += 1) {
+    tokens += estimateMessageTokens(messages[index]);
+    estimated = true;
+  }
+  return { tokens, contextWindow, estimated };
 }
 
 function toolResult<T extends object>(details: T): AgentToolResult<T> {
@@ -197,6 +237,11 @@ export class SmithAgentSession {
   get messageCount(): number {
     return this.agent.state.messages.length;
   }
+
+  get contextUsage(): ContextUsage {
+    return calculateContextUsage(this.agent.state.messages, this.agent.state.model.contextWindow);
+  }
+
   private readonly listeners = new Set<SmithEventListener>();
 
   private constructor(options: SmithAgentOptions, agent: Agent) {

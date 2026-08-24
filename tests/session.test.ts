@@ -33,6 +33,20 @@ describe("session store", () => {
     await expect(store.latest()).resolves.toMatchObject({ id: record.id });
   });
 
+  test("renames an existing session and rejects an empty title", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "smith-session-rename-"));
+    temporaryDirectories.push(directory);
+    const workspace = await openWorkspace(directory);
+    const store = new SessionStore(workspace);
+    const record = await store.create("test-model");
+
+    await store.setTitle(record, "First title");
+    await store.setTitle(record, "  Renamed   session  ");
+
+    await expect(store.load(record.id)).resolves.toMatchObject({ title: "Renamed session" });
+    await expect(store.setTitle(record, "   ")).rejects.toThrow("Session title must not be empty.");
+  });
+
   test("branches a session at a prompt boundary", async () => {
     const directory = await mkdtemp(join(tmpdir(), "smith-session-branch-"));
     temporaryDirectories.push(directory);

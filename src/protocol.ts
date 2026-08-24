@@ -42,6 +42,12 @@ export interface McpServerState {
   toolCount: number;
 }
 
+export interface ContextUsage {
+  tokens: number;
+  contextWindow: number;
+  estimated: boolean;
+}
+
 export interface SessionSummary {
   id: string;
   title: string;
@@ -62,6 +68,7 @@ export interface UiStateEvent {
   history: SmithEvent[];
   approvals: ApprovalState[];
   queuedPrompts: QueuedPrompt[];
+  contextUsage?: ContextUsage;
   mcpServers?: McpServerState[];
 }
 

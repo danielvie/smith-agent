@@ -25,10 +25,11 @@ function state(over: Partial<UiStateEvent> = {}): UiStateEvent {
     configPath: "smith.config.json",
     running: false,
     sessionId: "prototype-session",
-    sessions: [],
+    sessions: [{ id: "prototype-session", title: "Context meter smoke test", modelId: "claude-opus-5", createdAt: 1, updatedAt: 1, messageCount: 8 }],
     history: [],
     approvals: [],
     queuedPrompts: [],
+    contextUsage: { tokens: 196_500, contextWindow: 262_000, estimated: true },
     ...over,
   };
 }
