@@ -7,64 +7,61 @@ tasks:
       - task --list
     silent: true
 
-
   init:
-    desc: Init the Smith Agent CLI in the current directory
-    interactive: true
+    desc: Install the locked npm dependencies
     cmds:
-      - pnpm install --frozen-lockfile --registry=https://registry.npmjs.org --ignore-scripts
+      - npm ci
 
   run:
-    desc: Run the Smith Agent CLI in the current directory
+    desc: Run the Smith Agent CLI from source
     interactive: true
     cmds:
-      - pnpm run run
+      - npm run run
 
   ui:
-    desc: Start the local browser UI
+    desc: Start the local browser UI from source
     interactive: true
     cmds:
-      - pnpm run ui
+      - npm run ui
 
   ui:verify:
-    desc: Render the real UI against a scripted event stream (no agent, no API key)
+    desc: Render the real UI against a scripted event stream without a model call
     interactive: true
     cmds:
-      - pnpm run ui:verify
+      - npm run ui:verify
 
   ui:build:
-    desc: Generate Tailwind CSS and build the browser UI
+    desc: Build the browser UI
     cmds:
-      - pnpm run ui:build
+      - npm run ui:build
 
   ui:check:
-    desc: Verify Tailwind generates the production UI utilities
+    desc: Verify Tailwind generates the committed UI CSS
     cmds:
-      - pnpm run ui:check
-
+      - npm run ui:check
 
   test:
     desc: Run the automated tests
     cmds:
-      - pnpm run test
+      - npm test
 
   check:
     desc: Type-check the TypeScript sources
     cmds:
-      - pnpm run check
+      - npm run check
 
   build:windows:
-    desc: Build the Windows x64 standalone executable
+    desc: Build and smoke-test the Windows x64 Node SEA executable
     cmds:
-      - pnpm run build:windows
+      - npm run build:windows
 
-  build:targets:
-    desc: Build the current target artifacts for Windows, Linux, and macOS ARM64
+  test:sea:
+    desc: Smoke-test the built Windows x64 executable
     cmds:
-      - pnpm run build:targets
+      - npm run test:sea
 
   clean:
     desc: Remove build artifacts and dependencies
     cmds:
       - >-
-        node -e "import { rm } from 'node:fs/promises'; await rm('dist', { recursive: true, force: true }); await rm('node_modules', { recursive: true, force: true }); await rm('pnpm-lock.yaml', { force: true });"
+        node -e "import { rm } from 'node:fs/promises'; await rm('dist', { recursive: true, force: true }); await rm('node_modules', { recursive: true, force: true });"

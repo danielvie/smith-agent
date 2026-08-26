@@ -2,20 +2,23 @@
   "name": "smith-agent",
   "version": "0.1.0",
   "private": true,
-  "packageManager": "pnpm@11.20.0",
+  "packageManager": "npm@10.9.8",
+  "engines": {
+    "node": "22.22.3"
+  },
   "type": "module",
   "description": "Windows-first POC for a local assistant agent",
   "scripts": {
-    "run": "bun run src/cli.ts",
-    "ui": "pnpm run ui:css && bun run src/cli.ts --ui",
-    "test": "bun test",
+    "run": "tsx src/cli.ts",
+    "ui": "npm run ui:build && tsx src/cli.ts --ui",
+    "test": "npm run ui:build && vitest run",
     "check": "tsc --noEmit",
-    "build:windows": "pnpm run ui:css && bun build --compile --target=bun-windows-x64 src/cli.ts --outfile dist/smith-windows-x64.exe",
-    "build:targets": "pnpm run ui:css && bun build --compile --target=bun-windows-x64 src/cli.ts --outfile dist/smith-windows-x64.exe && bun build --compile --target=bun-linux-x64 src/cli.ts --outfile dist/smith-linux-x64 && bun build --compile --target=bun-darwin-arm64 src/cli.ts --outfile dist/smith-darwin-arm64",
+    "build:windows": "npm run ui:build && node scripts/build-sea.mjs && npm run test:sea",
+    "test:sea": "node scripts/verify-sea.mjs",
     "ui:css": "tailwindcss -i src/web/styles.css -o src/web/styles.generated.css --minify",
-    "ui:build": "pnpm run ui:css && bun build src/web/index.html --outdir dist/ui",
-    "ui:check": "bun run scripts/verify-tailwind.ts",
-    "ui:verify": "pnpm run ui:css && bun run scripts/verify-ui.ts"
+    "ui:build": "npm run ui:css && node scripts/build-ui.mjs",
+    "ui:check": "tsx scripts/verify-tailwind.ts",
+    "ui:verify": "npm run ui:build && tsx scripts/verify-ui.ts"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "0.84.2",
@@ -32,11 +35,14 @@
   },
   "devDependencies": {
     "@tailwindcss/cli": "^4",
-    "@types/bun": "^1.4.0",
-    "@types/dompurify": "^3.2.0",
+    "@types/node": "^22.19.13",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
+    "esbuild": "^0.28.2",
+    "postject": "1.0.0-alpha.6",
     "tailwindcss": "^4",
-    "typescript": "^7.0.2"
+    "tsx": "^4.20.6",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
   }
 }

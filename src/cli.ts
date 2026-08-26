@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { createInterface } from "node:readline/promises";
 import { randomUUID } from "node:crypto";
 import { stdin as input, stdout as output } from "node:process";
@@ -126,7 +127,8 @@ function openBrowser(url: string): void {
     : process.platform === "darwin"
       ? ["open", url]
       : ["xdg-open", url];
-  void Bun.spawn(command, { stdout: "ignore", stderr: "ignore" });
+  const child = spawn(command[0], command.slice(1), { detached: true, stdio: "ignore", windowsHide: true });
+  child.unref();
 }
 
 async function runUi(options: CliOptions): Promise<void> {
@@ -283,9 +285,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   }
 }
 
-if (import.meta.main) {
-  main().catch((error: unknown) => {
-    output.write(`smith: ${error instanceof Error ? error.message : String(error)}\n`);
-    process.exitCode = 1;
-  });
-}
+main().catch((error: unknown) => {
+  output.write(`smith: ${error instanceof Error ? error.message : String(error)}\n`);
+  process.exitCode = 1;
+});

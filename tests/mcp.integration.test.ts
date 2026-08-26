@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { connectConfiguredChromeDevToolsMcp, type ChromeDevToolsMcpConnection } from "../src/mcp";
 import { loadMcpConfig } from "../src/mcp-config";
 import { openWorkspace } from "../src/workspace";

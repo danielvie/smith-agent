@@ -1,5 +1,8 @@
 import { randomUUID } from "node:crypto";
-import index from "./web/index.html";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import type { ReadableStream as NodeReadableStream } from "node:stream/web";
 import { ApprovalManager } from "./approval";
 import { loadApprovalPolicy } from "./approval-policy";
 import { DEFAULT_MODEL_ID, SmithAgentSession } from "./agent";
@@ -8,6 +11,7 @@ import { connectConfiguredChromeDevToolsMcp } from "./mcp";
 import { DEFAULT_CONFIG_PATH, loadSmithConfig } from "./config";
 import { DEFAULT_MCP_CONFIG_PATH, loadMcpConfig } from "./mcp-config";
 import type { ApprovalDecision, ApprovalState, ContextUsage, McpServerState, PromptImage, QueuedPrompt, SessionSummary, SmithEvent, UiEvent, UiStateEvent } from "./protocol";
+import { loadUiAsset } from "./ui-assets";
 import { openWorkspace, type Workspace } from "./workspace";
 
 export const DEFAULT_UI_PORT = 3210;
@@ -110,6 +114,32 @@ function json(data: unknown, status = 200): Response {
     status,
     headers: { "Content-Type": "application/json; charset=utf-8" },
   });
+}
+
+function webRequest(request: IncomingMessage): Request {
+  const host = request.headers.host ?? "127.0.0.1";
+  const headers = new Headers();
+  for (const [name, value] of Object.entries(request.headers)) {
+    if (Array.isArray(value)) value.forEach((item) => headers.append(name, item));
+    else if (value !== undefined) headers.set(name, value);
+  }
+  const init: RequestInit & { duplex?: "half" } = { method: request.method, headers };
+  if (request.method !== "GET" && request.method !== "HEAD") {
+    init.body = Readable.toWeb(request) as ReadableStream<Uint8Array>;
+    init.duplex = "half";
+  }
+  return new Request(`http://${host}${request.url ?? "/"}`, init);
+}
+
+async function sendWebResponse(source: Response, target: ServerResponse): Promise<void> {
+  target.statusCode = source.status;
+  if (source.statusText) target.statusMessage = source.statusText;
+  source.headers.forEach((value, name) => target.setHeader(name, value));
+  if (!source.body) {
+    target.end();
+    return;
+  }
+  await pipeline(Readable.fromWeb(source.body as unknown as NodeReadableStream), target);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -297,111 +327,139 @@ export async function startUiServer(options: UiServerOptions = {}): Promise<UiSe
   const port = options.port ?? Number(process.env.SMITH_UI_PORT ?? DEFAULT_UI_PORT);
   if (!Number.isInteger(port) || port < 0 || port > 65_535) throw new Error("UI port must be an integer between 0 and 65535.");
 
-  const server = Bun.serve({
-    hostname: "127.0.0.1",
-    port,
-    routes: { "/": index },
-    async fetch(request) {
-      const url = new URL(request.url);
+  const [index, client, styles] = await Promise.all([
+    loadUiAsset("index.html"),
+    loadUiAsset("client.js"),
+    loadUiAsset("client.css"),
+  ]);
 
-      if (request.method === "GET" && url.pathname === "/events") return events.response();
-      if (request.method === "GET" && url.pathname === "/api/state") return json(currentState());
-      if (request.method === "GET" && url.pathname === "/api/sessions") return json({ sessions: sessionSummaries, activeSessionId: activeSessionRecord.id });
+  const handleRequest = async (request: Request): Promise<Response> => {
+    const url = new URL(request.url);
 
-      if (request.method !== "POST") return json({ error: "Not found" }, 404);
+    if (request.method === "GET" && url.pathname === "/") return new Response(index, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+    if (request.method === "GET" && url.pathname === "/client.js") return new Response(client, { headers: { "Content-Type": "text/javascript; charset=utf-8" } });
+    if (request.method === "GET" && url.pathname === "/client.css") return new Response(styles, { headers: { "Content-Type": "text/css; charset=utf-8" } });
+    if (request.method === "GET" && url.pathname === "/events") return events.response();
+    if (request.method === "GET" && url.pathname === "/api/state") return json(currentState());
+    if (request.method === "GET" && url.pathname === "/api/sessions") return json({ sessions: sessionSummaries, activeSessionId: activeSessionRecord.id });
 
-      try {
-        const body = await requestBody(request);
-        if (url.pathname === "/api/prompt") {
-          const prompt = promptFrom(body);
-          return json(submitPrompt(prompt.message, prompt.images), 202);
-        }
+    if (request.method !== "POST") return json({ error: "Not found" }, 404);
 
-        if (url.pathname === "/api/session/new") {
-          if (activeRun) return json({ error: "Cannot switch sessions while a run is active." }, 409);
-          const previousId = activeSessionRecord.id;
-          const record = await sessionStore.createAndOpen(selectedModelId);
-          attachSession(record);
-          await sessionStore.release(previousId);
-          sessionSummaries = await sessionStore.list();
-          events.publish(currentState());
-          return json({ accepted: true, sessionId: record.id }, 202);
-        }
-        if (url.pathname === "/api/session/select") {
-          if (activeRun) return json({ error: "Cannot switch sessions while a run is active." }, 409);
-          if (typeof body.sessionId !== "string") return json({ error: "sessionId is required." }, 400);
-          const previousId = activeSessionRecord.id;
-          const record = await sessionStore.resume(body.sessionId);
-          attachSession(record);
-          if (record.id !== previousId) await sessionStore.release(previousId);
-          sessionSummaries = await sessionStore.list();
-          events.publish(currentState());
-          return json({ accepted: true, sessionId: record.id }, 202);
-        }
-        if (url.pathname === "/api/session/delete") {
-          if (activeRun) return json({ error: "Cannot delete a session while a run is active." }, 409);
-          if (typeof body.sessionId !== "string") return json({ error: "sessionId is required." }, 400);
-          if (body.sessionId !== activeSessionRecord.id) return json({ error: "Only the active session can be deleted." }, 409);
-          await sessionStore.delete(body.sessionId);
-          const record = await sessionStore.openLatestOrCreate(selectedModelId);
-          attachSession(record);
-          sessionSummaries = await sessionStore.list();
-          events.publish(currentState());
-          return json({ accepted: true, deletedSessionId: body.sessionId, sessionId: record.id }, 202);
-        }
-        if (url.pathname === "/api/session/rename") {
-          if (typeof body.title !== "string") return json({ error: "title is required." }, 400);
-          await sessionStore.setTitle(activeSessionRecord, body.title);
-          sessionSummaries = await sessionStore.list();
-          events.publish(currentState());
-          return json({ accepted: true }, 202);
-        }
-        if (url.pathname === "/api/session/branch") {
-          if (activeRun) return json({ error: "Cannot branch a session while a run is active." }, 409);
-          if (typeof body.promptId !== "string") return json({ error: "promptId is required." }, 400);
-          branchSessionRecord(activeSessionRecord, body.promptId);
-          attachSession(activeSessionRecord);
-          await sessionStore.save(activeSessionRecord);
-          sessionSummaries = await sessionStore.list();
-          events.publish(currentState());
-          return json({ accepted: true, sessionId: activeSessionRecord.id }, 202);
-        }
-        if (url.pathname === "/api/queue/cancel") {
-          if (typeof body.queueId !== "string" || !body.queueId) return json({ error: "queueId is required." }, 400);
-          if (!cancelQueuedPrompt(body.queueId)) return json({ error: "Queued prompt is no longer pending." }, 409);
-          return json({ accepted: true }, 202);
-        }
-        if (url.pathname === "/api/steer") {
-          session.steer(messageFrom(body));
-          return json({ accepted: true }, 202);
-        }
-        if (url.pathname === "/api/abort") {
-          session.abort();
-          approvals.cancelAll();
-          return json({ accepted: true }, 202);
-        }
-        if (url.pathname === "/api/approval") {
-          if (typeof body.requestId !== "string") return json({ error: "requestId is required." }, 400);
-          let decision: ApprovalDecision;
-          if (body.decision === "approve" || body.decision === "always" || body.decision === "deny") {
-            decision = body.decision;
-          } else if (typeof body.approved === "boolean") {
-            decision = body.approved ? "approve" : "deny";
-          } else {
-            return json({ error: "decision must be approve, always, or deny." }, 400);
-          }
-          if (!(await approvals.decide(body.requestId, decision))) return json({ error: "Approval is no longer pending." }, 409);
-          return json({ accepted: true }, 202);
-        }
-        return json({ error: "Not found" }, 404);
-      } catch (error) {
-        return json({ error: error instanceof Error ? error.message : String(error) }, 400);
+    try {
+      const body = await requestBody(request);
+      if (url.pathname === "/api/prompt") {
+        const prompt = promptFrom(body);
+        return json(submitPrompt(prompt.message, prompt.images), 202);
       }
-    },
+
+      if (url.pathname === "/api/session/new") {
+        if (activeRun) return json({ error: "Cannot switch sessions while a run is active." }, 409);
+        const previousId = activeSessionRecord.id;
+        const record = await sessionStore.createAndOpen(selectedModelId);
+        attachSession(record);
+        await sessionStore.release(previousId);
+        sessionSummaries = await sessionStore.list();
+        events.publish(currentState());
+        return json({ accepted: true, sessionId: record.id }, 202);
+      }
+      if (url.pathname === "/api/session/select") {
+        if (activeRun) return json({ error: "Cannot switch sessions while a run is active." }, 409);
+        if (typeof body.sessionId !== "string") return json({ error: "sessionId is required." }, 400);
+        const previousId = activeSessionRecord.id;
+        const record = await sessionStore.resume(body.sessionId);
+        attachSession(record);
+        if (record.id !== previousId) await sessionStore.release(previousId);
+        sessionSummaries = await sessionStore.list();
+        events.publish(currentState());
+        return json({ accepted: true, sessionId: record.id }, 202);
+      }
+      if (url.pathname === "/api/session/delete") {
+        if (activeRun) return json({ error: "Cannot delete a session while a run is active." }, 409);
+        if (typeof body.sessionId !== "string") return json({ error: "sessionId is required." }, 400);
+        if (body.sessionId !== activeSessionRecord.id) return json({ error: "Only the active session can be deleted." }, 409);
+        await sessionStore.delete(body.sessionId);
+        const record = await sessionStore.openLatestOrCreate(selectedModelId);
+        attachSession(record);
+        sessionSummaries = await sessionStore.list();
+        events.publish(currentState());
+        return json({ accepted: true, deletedSessionId: body.sessionId, sessionId: record.id }, 202);
+      }
+      if (url.pathname === "/api/session/rename") {
+        if (typeof body.title !== "string") return json({ error: "title is required." }, 400);
+        await sessionStore.setTitle(activeSessionRecord, body.title);
+        sessionSummaries = await sessionStore.list();
+        events.publish(currentState());
+        return json({ accepted: true }, 202);
+      }
+      if (url.pathname === "/api/session/branch") {
+        if (activeRun) return json({ error: "Cannot branch a session while a run is active." }, 409);
+        if (typeof body.promptId !== "string") return json({ error: "promptId is required." }, 400);
+        branchSessionRecord(activeSessionRecord, body.promptId);
+        attachSession(activeSessionRecord);
+        await sessionStore.save(activeSessionRecord);
+        sessionSummaries = await sessionStore.list();
+        events.publish(currentState());
+        return json({ accepted: true, sessionId: activeSessionRecord.id }, 202);
+      }
+      if (url.pathname === "/api/queue/cancel") {
+        if (typeof body.queueId !== "string" || !body.queueId) return json({ error: "queueId is required." }, 400);
+        if (!cancelQueuedPrompt(body.queueId)) return json({ error: "Queued prompt is no longer pending." }, 409);
+        return json({ accepted: true }, 202);
+      }
+      if (url.pathname === "/api/steer") {
+        session.steer(messageFrom(body));
+        return json({ accepted: true }, 202);
+      }
+      if (url.pathname === "/api/abort") {
+        session.abort();
+        approvals.cancelAll();
+        return json({ accepted: true }, 202);
+      }
+      if (url.pathname === "/api/approval") {
+        if (typeof body.requestId !== "string") return json({ error: "requestId is required." }, 400);
+        let decision: ApprovalDecision;
+        if (body.decision === "approve" || body.decision === "always" || body.decision === "deny") {
+          decision = body.decision;
+        } else if (typeof body.approved === "boolean") {
+          decision = body.approved ? "approve" : "deny";
+        } else {
+          return json({ error: "decision must be approve, always, or deny." }, 400);
+        }
+        if (!(await approvals.decide(body.requestId, decision))) return json({ error: "Approval is no longer pending." }, 409);
+        return json({ accepted: true }, 202);
+      }
+      return json({ error: "Not found" }, 404);
+    } catch (error) {
+      return json({ error: error instanceof Error ? error.message : String(error) }, 400);
+    }
+  };
+
+  const server = createServer((incoming, outgoing) => {
+    void handleRequest(webRequest(incoming))
+      .then((response) => sendWebResponse(response, outgoing))
+      .catch((error: unknown) => {
+        if (outgoing.headersSent) {
+          outgoing.destroy(error instanceof Error ? error : new Error(String(error)));
+          return;
+        }
+        outgoing.statusCode = 500;
+        outgoing.setHeader("Content-Type", "application/json; charset=utf-8");
+        outgoing.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+      });
   });
+  await new Promise<void>((resolve, reject) => {
+    const onError = (error: Error) => reject(error);
+    server.once("error", onError);
+    server.listen(port, "127.0.0.1", () => {
+      server.off("error", onError);
+      resolve();
+    });
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Could not determine the UI server port.");
 
   return {
-    url: `http://127.0.0.1:${server.port}/`,
+    url: `http://127.0.0.1:${address.port}/`,
     workspace,
     session,
     approvals,
@@ -411,7 +469,8 @@ export async function startUiServer(options: UiServerOptions = {}): Promise<UiSe
       session.abort();
       approvals.cancelAll();
       events.close();
-      void server.stop(true);
+      server.close();
+      server.closeAllConnections();
       unsubscribeSession();
       void sessionStore.close();
       void chromeMcp?.close();

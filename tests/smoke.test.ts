@@ -1,7 +1,7 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 
-describe("POC scaffold", () => {
-  test("runs under Bun", () => {
-    expect(process.versions.bun).toBeString();
+describe("runtime", () => {
+  test("runs under the required Node version", () => {
+    expect(process.versions.node).toBe("22.22.3");
   });
 });

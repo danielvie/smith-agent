@@ -1,3 +1,4 @@
+import { access } from "node:fs/promises";
 import type { Workspace } from "./workspace";
 
 export const DEFAULT_MCP_CONFIG_PATH = "mcp.json";
@@ -53,7 +54,12 @@ function parseServer(value: unknown, path: string): McpServerConfig {
 
 export async function loadMcpConfig(workspace: Workspace, relativePath = DEFAULT_MCP_CONFIG_PATH): Promise<McpConfig> {
   const configPath = workspace.resolvePath(relativePath);
-  if (!(await Bun.file(configPath).exists())) return {};
+  try {
+    await access(configPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
+    throw error;
+  }
 
   const file = await workspace.readFile(relativePath);
   let parsed: unknown;

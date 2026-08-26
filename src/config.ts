@@ -1,3 +1,4 @@
+import { access } from "node:fs/promises";
 import type { Workspace } from "./workspace";
 
 export const DEFAULT_CONFIG_PATH = "smith.config.json";
@@ -19,7 +20,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 export async function loadSmithConfig(workspace: Workspace, relativePath = DEFAULT_CONFIG_PATH): Promise<SmithConfig> {
   const configPath = workspace.resolvePath(relativePath);
-  if (!(await Bun.file(configPath).exists())) return {};
+  try {
+    await access(configPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
+    throw error;
+  }
 
   const file = await workspace.readFile(relativePath);
   let parsed: unknown;

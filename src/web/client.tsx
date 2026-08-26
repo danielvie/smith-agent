@@ -1,3 +1,4 @@
+import "./styles.generated.css";
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
 import { createRoot } from "react-dom/client";
 import { Group, Panel, Separator } from "react-resizable-panels";

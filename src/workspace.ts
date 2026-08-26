@@ -1,5 +1,7 @@
+import { spawn } from "node:child_process";
 import { lstat, readdir, readFile as readFileFromDisk, realpath, stat, writeFile as writeFileToDisk } from "node:fs/promises";
 import { dirname, isAbsolute, join, posix, relative, resolve, win32 } from "node:path";
+import type { Readable } from "node:stream";
 
 export const DEFAULT_MAX_FILE_BYTES = 256 * 1024;
 export const DEFAULT_MAX_COMMAND_OUTPUT_BYTES = 128 * 1024;
@@ -148,36 +150,33 @@ function asWorkspaceError(error: unknown, fallback: string): WorkspaceError {
   return new WorkspaceError(fallback);
 }
 
-async function readLimited(stream: ReadableStream<Uint8Array> | null, maxBytes: number, signal?: AbortSignal): Promise<{ text: string; truncated: boolean }> {
+async function readLimited(stream: Readable | null, maxBytes: number, signal?: AbortSignal): Promise<{ text: string; truncated: boolean }> {
   if (!stream) return { text: "", truncated: false };
 
-  const reader = stream.getReader();
   const decoder = new TextDecoder();
   const chunks: Uint8Array[] = [];
   let bytes = 0;
   let truncated = false;
-  const cancel = () => void reader.cancel();
+  const cancel = () => stream.destroy();
   if (signal?.aborted) cancel();
   else signal?.addEventListener("abort", cancel, { once: true });
 
   try {
-    while (true) {
-      const next = await reader.read();
-      if (next.done) break;
+    for await (const value of stream) {
+      const next = typeof value === "string" ? new TextEncoder().encode(value) : new Uint8Array(value);
       if (bytes >= maxBytes) {
         truncated = true;
         continue;
       }
 
       const remaining = maxBytes - bytes;
-      const chunk = next.value.subarray(0, remaining);
+      const chunk = next.subarray(0, remaining);
       chunks.push(chunk);
       bytes += chunk.byteLength;
-      if (chunk.byteLength < next.value.byteLength) truncated = true;
+      if (chunk.byteLength < next.byteLength) truncated = true;
     }
   } finally {
     signal?.removeEventListener("abort", cancel);
-    reader.releaseLock();
   }
 
   let text = "";
@@ -367,7 +366,11 @@ export class Workspace {
     const cwdPath = await this.existingPath(relativeCwd, "directory");
     const boundedTimeout = Math.max(1, Math.min(timeoutMs, MAX_COMMAND_TIMEOUT_MS));
     const commandLine = process.platform === "win32" ? ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command] : ["/bin/sh", "-lc", command];
-    const processHandle = Bun.spawn(commandLine, { cwd: cwdPath, stdout: "pipe", stderr: "pipe" });
+    const processHandle = spawn(commandLine[0], commandLine.slice(1), { cwd: cwdPath, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    const exited = new Promise<number>((resolveExit, rejectExit) => {
+      processHandle.once("error", rejectExit);
+      processHandle.once("close", (code) => resolveExit(code ?? -1));
+    });
     let timedOut = false;
     const termination = new AbortController();
     const stopProcess = () => {
@@ -386,11 +389,11 @@ export class Workspace {
     }, boundedTimeout);
 
     try {
-      const [stdout, stderr] = await Promise.all([
+      const [stdout, stderr, exitCode] = await Promise.all([
         readLimited(processHandle.stdout, this.maxCommandOutputBytes, termination.signal),
         readLimited(processHandle.stderr, this.maxCommandOutputBytes, termination.signal),
+        exited,
       ]);
-      const exitCode = await processHandle.exited;
 
       if (signal?.aborted) throw new WorkspaceError("Command was aborted.");
       if (timedOut) throw new WorkspaceError(`Command timed out after ${boundedTimeout} ms.`);

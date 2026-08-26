@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { createMcpTools, type McpClient } from "../src/mcp";
 
 describe("MCP tool bridge", () => {

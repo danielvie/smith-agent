@@ -1,10 +1,10 @@
 // Development harness for the real browser UI. No agent, model call, API key, or persistence.
-import index from "../src/web/index.html";
+import { readFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import type { ApprovalState, UiEvent, UiStateEvent } from "../src/protocol";
 
 const port = Number(process.env.SMITH_VERIFY_PORT ?? 3212);
 const workspace = "C:\\SANDBOX\\REPOS\\smith-agent";
-const encoder = new TextEncoder();
 
 const approval = (id: string, kind: "write" | "shell", toolName: string, args: Record<string, unknown>): ApprovalState => ({
   request: { id, kind, toolName, args },
@@ -68,9 +68,9 @@ function script(): Array<{ after: number; event: UiEvent }> {
     result: "src/server.ts:131  const queuedPrompts: QueuedPrompt[] = [];\nsrc/server.ts:156  const next = queuedPrompts.shift();",
     isError: false,
   });
-  push({ type: "tool_start", toolCallId: `${run}-t3`, toolName: "shell", args: { command: "bun test tests/server.test.ts" } }, 1600);
+  push({ type: "tool_start", toolCallId: `${run}-t3`, toolName: "shell", args: { command: "npm test -- tests/server.test.ts" } }, 1600);
 
-  const ask = approval(`${run}-ap1`, "shell", "shell", { command: "bun test tests/server.test.ts", cwd: workspace });
+  const ask = approval(`${run}-ap1`, "shell", "shell", { command: "npm test -- tests/server.test.ts", cwd: workspace });
   push({ type: "approval_request", approval: ask }, 900);
   push(state({ running: true, approvals: [ask], queuedPrompts: [{ id: `${run}-q1`, message: "Now check whether abort clears the queue too.", createdAt: Date.now() }] }), 2600);
 
@@ -94,42 +94,53 @@ function script(): Array<{ after: number; event: UiEvent }> {
   return steps;
 }
 
-const server = Bun.serve({
-  hostname: "127.0.0.1",
-  port,
-  development: true,
-  idleTimeout: 255,
-  routes: { "/": index },
-  fetch(request) {
-    const url = new URL(request.url);
-    if (url.pathname === "/events") {
-      const timers: ReturnType<typeof setTimeout>[] = [];
-      let open = true;
-      const stream = new ReadableStream<Uint8Array>({
-        start(controller) {
-          const send = (event: UiEvent) => {
-            if (!open) return;
-            try {
-              controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
-            } catch {
-              open = false;
-            }
-          };
-          send(state());
-          for (const step of script()) timers.push(setTimeout(() => send(step.event), step.after));
-        },
-        cancel() {
-          open = false;
-          timers.forEach(clearTimeout);
-        },
-      });
-      return new Response(stream, {
-        headers: { "Cache-Control": "no-cache", "Content-Type": "text/event-stream; charset=utf-8" },
-      });
-    }
-    if (request.method === "POST") return new Response(JSON.stringify({ accepted: true }), { status: 202, headers: { "Content-Type": "application/json" } });
-    return new Response("Not found", { status: 404 });
-  },
+const [index, client, styles] = await Promise.all([
+  readFile("dist/ui/index.html"),
+  readFile("dist/ui/client.js"),
+  readFile("dist/ui/client.css"),
+]);
+
+const server = createServer((request, response) => {
+  const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "127.0.0.1"}`);
+  if (request.method === "GET" && url.pathname === "/") {
+    response.setHeader("Content-Type", "text/html; charset=utf-8");
+    response.end(index);
+    return;
+  }
+  if (request.method === "GET" && url.pathname === "/client.js") {
+    response.setHeader("Content-Type", "text/javascript; charset=utf-8");
+    response.end(client);
+    return;
+  }
+  if (request.method === "GET" && url.pathname === "/client.css") {
+    response.setHeader("Content-Type", "text/css; charset=utf-8");
+    response.end(styles);
+    return;
+  }
+  if (url.pathname === "/events") {
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    let open = true;
+    response.writeHead(200, { "Cache-Control": "no-cache", "Content-Type": "text/event-stream; charset=utf-8" });
+    const send = (event: UiEvent) => {
+      if (open) response.write(`data: ${JSON.stringify(event)}\n\n`);
+    };
+    send(state());
+    for (const step of script()) timers.push(setTimeout(() => send(step.event), step.after));
+    request.once("close", () => {
+      open = false;
+      timers.forEach(clearTimeout);
+    });
+    return;
+  }
+  if (request.method === "POST") {
+    response.writeHead(202, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({ accepted: true }));
+    return;
+  }
+  response.statusCode = 404;
+  response.end("Not found");
 });
 
-console.log(`Smith UI verification: http://127.0.0.1:${server.port}/`);
+server.listen(port, "127.0.0.1", () => {
+  console.log(`Smith UI verification: http://127.0.0.1:${port}/`);
+});

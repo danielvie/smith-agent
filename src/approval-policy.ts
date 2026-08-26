@@ -1,3 +1,4 @@
+import { access } from "node:fs/promises";
 import type { Workspace } from "./workspace";
 
 export const DEFAULT_APPROVALS_PATH = "approvals.json";
@@ -48,7 +49,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 export async function loadApprovalPolicy(workspace: Workspace, relativePath = DEFAULT_APPROVALS_PATH): Promise<ApprovalPolicyStore> {
   const policyPath = workspace.resolvePath(relativePath);
-  if (!(await Bun.file(policyPath).exists())) return new ApprovalPolicyStore(workspace, relativePath);
+  try {
+    await access(policyPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return new ApprovalPolicyStore(workspace, relativePath);
+    throw error;
+  }
 
   const file = await workspace.readFile(relativePath);
   let parsed: unknown;

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -61,7 +61,7 @@ describe("browser server", () => {
     const server = await startUiServer({ workspacePath: directory, port: 0 });
     servers.push(server);
     const initialState = await (await fetch(new URL("api/state", server.url))).json() as { sessionId: string; sessions: Array<{ id: string }> };
-    expect(initialState.sessionId).toBeString();
+    expect(typeof initialState.sessionId).toBe("string");
     expect(initialState.sessions).toHaveLength(1);
 
     const created = await fetch(new URL("api/session/new", server.url), { method: "POST", body: "{}" });

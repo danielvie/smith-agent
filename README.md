@@ -2,14 +2,14 @@
 
 Windows-first proof of concept for a local assistant agent.
 
-The first slice is intentionally small: a Bun executable, a Pi-backed agent adapter, BCAI and Fireworks model providers, and terminal/browser clients operating on one configurable workspace root.
+The first slice is intentionally small: a Node single executable application, a Pi-backed agent adapter, BCAI and Fireworks model providers, and terminal/browser clients operating on one configurable workspace root.
 
 ## Development
 
 Requirements:
 
-- Bun 1.4+ runtime
-- pnpm 11+
+- Node.js 22.22.3
+- npm 10+
 - Task 3+
 - BCAI UDAL token in `UDAL_PAT`, or a Fireworks API key when using Fireworks
 - A browser for UI mode
@@ -23,7 +23,7 @@ task run
 The current directory is the workspace by default. Use `--workspace <path>` when starting from another folder.
 
 ```powershell
-pnpm run run -- --workspace C:\path\to\project
+npm run run -- --workspace C:\path\to\project
 ```
 
 Model settings live in `smith.config.json` at the workspace root:
@@ -81,8 +81,8 @@ Smith stores resumable sessions under `.smith/sessions/`. It resumes the most re
 The UI has a session picker plus New and Delete buttons. Delete confirms before removing the active session and creates a replacement when the last session is removed. In the CLI:
 
 ```powershell
-pnpm run run -- --new-session
-pnpm run run -- --session <session-id>
+npm run run -- --new-session
+npm run run -- --session <session-id>
 ```
 
 While running the CLI, use `/sessions`, `/new`, or `/resume <session-id>` to switch sessions. Switching is disabled while a run is active.
@@ -102,7 +102,7 @@ task ui
 Or run it without opening a browser automatically:
 
 ```powershell
-pnpm run ui -- --no-open --port 3210
+npm run ui -- --no-open --port 3210
 ```
 
 The UI binds to `127.0.0.1`, streams events with SSE, queues prompts sent during an active run, and supports aborts, tool approvals, Markdown, LaTeX, and JSON ECharts blocks. Queued prompts can be edited or canceled before execution:
@@ -112,6 +112,24 @@ The UI binds to `127.0.0.1`, streams events with SSE, queues prompts sent during
 {"title":{"text":"Example"},"xAxis":{"type":"category","data":["A","B"]},"yAxis":{},"series":[{"type":"bar","data":[3,5]}]}
 ```
 ````
+
+## Windows single executable
+
+Build the Node SEA with the required Node version:
+
+```powershell
+npm ci
+npm run build:windows
+```
+
+The output is `dist/smith-windows-x64.exe`. The executable contains the Node runtime, server bundle, npm runtime dependencies, and browser assets. It still uses an installed browser and reads credentials and workspace configuration from the environment and selected workspace.
+
+```powershell
+$env:UDAL_PAT = "<your BCAI UDAL token>"
+.\dist\smith-windows-x64.exe --ui --workspace C:\path\to\project
+```
+
+Build each operating-system artifact on that operating system. Sign the final executable after SEA injection if it will be distributed.
 
 ## Chrome DevTools MCP
 
@@ -123,7 +141,7 @@ Run the live integration check with:
 
 ```powershell
 $env:SMITH_MCP_INTEGRATION = "1"
-pnpm run test -- tests/mcp.integration.test.ts
+npm test -- tests/mcp.integration.test.ts
 ```
 
 The check navigates to a Google search through Smith's MCP bridge and reads the returned page text. With the current config, Chrome must be reachable at `http://127.0.0.1:9222` before running it.
