@@ -93,7 +93,7 @@ function Chart({ option, source }: { option: echarts.EChartsOption; source: stri
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [source]);
 
-  return <div className="chart" ref={host} />;
+  return <div className="mb-[.95em] h-[300px] w-full" ref={host} />;
 }
 
 export function Markdown({ source }: { source: string }) {

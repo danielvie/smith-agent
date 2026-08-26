@@ -38,6 +38,16 @@ tasks:
     cmds:
       - pnpm run ui:verify
 
+  ui:build:
+    desc: Generate Tailwind CSS and build the browser UI
+    cmds:
+      - pnpm run ui:build
+
+  ui:check:
+    desc: Verify Tailwind generates the production UI utilities
+    cmds:
+      - pnpm run ui:check
+
 
   test:
     desc: Run the automated tests
