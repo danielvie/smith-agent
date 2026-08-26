@@ -126,4 +126,4 @@ pnpm run test -- tests/mcp.integration.test.ts
 
 The check navigates to a Google search through Smith's MCP bridge and reads the returned page text. With the current config, Chrome must be reachable at `http://127.0.0.1:9222` before running it.
 
-The Pi adapter and MCP bridge stay behind `src/agent.ts` and `src/mcp.ts` so terminal and browser clients use the same app-owned event and approval types.
+The Pi adapter and MCP bridge stay behind `src/agent.ts` and `src/mcp.ts` so terminal and browser clients use the same app-owned event and approval types. Terminal mode renders completed Markdown blocks, including GitHub-flavored tables, before tool calls and when a run finishes.

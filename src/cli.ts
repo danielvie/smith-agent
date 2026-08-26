@@ -1,13 +1,14 @@
 import { createInterface } from "node:readline/promises";
 import { randomUUID } from "node:crypto";
 import { stdin as input, stdout as output } from "node:process";
-import { DEFAULT_MODEL_ID, SmithAgentSession, type ApprovalRequest, type SmithEvent } from "./agent";
+import { DEFAULT_MODEL_ID, SmithAgentSession, type ApprovalRequest } from "./agent";
 import { DEFAULT_APPROVALS_PATH, loadApprovalPolicy, type ApprovalPolicyStore } from "./approval-policy";
 import type { ApprovalDecision } from "./protocol";
 import { DEFAULT_CONFIG_PATH, loadSmithConfig } from "./config";
 import { DEFAULT_MCP_CONFIG_PATH, loadMcpConfig } from "./mcp-config";
 import { connectConfiguredChromeDevToolsMcp } from "./mcp";
 import { SessionStore, type SessionRecord } from "./session";
+import { TerminalMarkdownOutput } from "./terminal-markdown";
 import { openWorkspace } from "./workspace";
 
 interface CliOptions {
@@ -147,29 +148,6 @@ async function runUi(options: CliOptions): Promise<void> {
 }
 
 
-function printEvent(event: SmithEvent): void {
-  switch (event.type) {
-    case "text_delta":
-      output.write(event.delta);
-      break;
-    case "thinking_delta":
-      break;
-    case "tool_start":
-      output.write(`\n[tool ${event.toolName}] ${JSON.stringify(event.args)}\n`);
-      break;
-    case "tool_update":
-      break;
-    case "tool_end":
-      output.write(`[tool ${event.toolName} ${event.isError ? "failed" : "done"}]\n`);
-      break;
-    case "error":
-      output.write(`\n[agent error] ${event.message}\n`);
-      break;
-    case "status":
-      break;
-  }
-}
-
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   const options = parseArgs(argv);
   if (options.help) {
@@ -199,6 +177,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       : await sessionStore.latest() ?? await sessionStore.create(selectedModelId);
   let activeRecord: SessionRecord = initialRecord;
   const rl = createInterface({ input, output, terminal: Boolean(input.isTTY) });
+  const terminalOutput = new TerminalMarkdownOutput(output);
   let session!: SmithAgentSession;
   let unsubscribe: () => void = () => {};
 
@@ -220,7 +199,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     });
     unsubscribe = session.subscribe((event) => {
       record.history.push(event);
-      printEvent(event);
+      terminalOutput.writeEvent(event);
     });
   };
 
@@ -286,9 +265,9 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         activeRecord.promptMessageStarts[promptId] = session.messageCount;
         activeRecord.history.push({ type: "prompt_start", promptId, message: line });
         await session.prompt(line);
-        output.write("\n");
       } catch (error) {
-        output.write(`\n[agent error] ${error instanceof Error ? error.message : String(error)}\n`);
+        terminalOutput.flush();
+        output.write(`[agent error] ${error instanceof Error ? error.message : String(error)}\n`);
       }
     }
   } finally {
