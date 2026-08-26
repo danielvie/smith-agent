@@ -171,10 +171,10 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   const sessionStore = new SessionStore(workspace);
   const selectedModelId = modelId ?? DEFAULT_MODEL_ID;
   const initialRecord = options.newSession
-    ? await sessionStore.create(selectedModelId)
+    ? await sessionStore.createAndOpen(selectedModelId)
     : options.sessionId
-      ? await sessionStore.load(options.sessionId)
-      : await sessionStore.latest() ?? await sessionStore.create(selectedModelId);
+      ? await sessionStore.resume(options.sessionId)
+      : await sessionStore.openLatestOrCreate(selectedModelId);
   let activeRecord: SessionRecord = initialRecord;
   const rl = createInterface({ input, output, terminal: Boolean(input.isTTY) });
   const terminalOutput = new TerminalMarkdownOutput(output);
@@ -234,7 +234,9 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         continue;
       }
       if (trimmed === "/new") {
-        activate(await sessionStore.create(selectedModelId));
+        const previousId = activeRecord.id;
+        activate(await sessionStore.createAndOpen(selectedModelId));
+        await sessionStore.release(previousId);
         output.write(`Switched to session ${activeRecord.id}.\n`);
         continue;
       }
@@ -244,7 +246,10 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
           output.write("Usage: /resume <session-id>\n");
           continue;
         }
-        activate(await sessionStore.load(requestedId));
+        const previousId = activeRecord.id;
+        const record = await sessionStore.resume(requestedId);
+        activate(record);
+        if (record.id !== previousId) await sessionStore.release(previousId);
         output.write(`Resumed session ${activeRecord.id}.\n`);
         continue;
       }
@@ -273,6 +278,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   } finally {
     unsubscribe();
     rl.close();
+    await sessionStore.close();
     await chromeMcp?.close();
   }
 }

@@ -7,13 +7,17 @@ import { branchSessionRecord, SessionStore, type SessionRecord } from "./session
 import { connectConfiguredChromeDevToolsMcp } from "./mcp";
 import { DEFAULT_CONFIG_PATH, loadSmithConfig } from "./config";
 import { DEFAULT_MCP_CONFIG_PATH, loadMcpConfig } from "./mcp-config";
-import type { ApprovalDecision, ApprovalState, ContextUsage, McpServerState, QueuedPrompt, SessionSummary, SmithEvent, UiEvent, UiStateEvent } from "./protocol";
+import type { ApprovalDecision, ApprovalState, ContextUsage, McpServerState, PromptImage, QueuedPrompt, SessionSummary, SmithEvent, UiEvent, UiStateEvent } from "./protocol";
 import { openWorkspace, type Workspace } from "./workspace";
 
 export const DEFAULT_UI_PORT = 3210;
-const MAX_REQUEST_BODY_BYTES = 64 * 1024;
+const MAX_REQUEST_BODY_BYTES = 8 * 1024 * 1024;
+const MAX_SCREENSHOT_BYTES = 5 * 1024 * 1024;
+const MAX_SCREENSHOTS = 4;
+const SCREENSHOT_MIME_TYPES = new Set<PromptImage["mimeType"]>(["image/png", "image/jpeg", "image/webp"]);
 
 type EventController = ReadableStreamDefaultController<Uint8Array>;
+type PendingPrompt = QueuedPrompt & { images: PromptImage[] };
 
 class SseHub {
   private readonly clients = new Set<EventController>();
@@ -128,7 +132,34 @@ function messageFrom(body: Record<string, unknown>): string {
   return body.message;
 }
 
-function stateEvent(workspace: Workspace, model: string, configPath: string, sessionId: string, sessions: SessionSummary[], history: SmithEvent[], running: boolean, approvals: ApprovalState[], queuedPrompts: QueuedPrompt[], contextUsage: ContextUsage, mcpServers: McpServerState[]): UiStateEvent {
+function base64ByteLength(value: string): number {
+  if (!value || value.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/u.test(value)) throw new Error("screenshot data must be valid base64.");
+  const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
+  return value.length / 4 * 3 - padding;
+}
+
+function promptFrom(body: Record<string, unknown>): { message: string; images: PromptImage[] } {
+  if (body.message !== undefined && typeof body.message !== "string") throw new Error("message must be a string.");
+  const message = typeof body.message === "string" ? body.message : "";
+  if (message.length > 16_000) throw new Error("message exceeds the 16000-character limit.");
+  if (body.images !== undefined && !Array.isArray(body.images)) throw new Error("images must be an array.");
+  const values = body.images ?? [];
+  if (values.length > MAX_SCREENSHOTS) throw new Error(`A prompt can contain at most ${MAX_SCREENSHOTS} screenshots.`);
+
+  let totalBytes = 0;
+  const images = values.map((value): PromptImage => {
+    if (!isRecord(value) || typeof value.data !== "string" || typeof value.mimeType !== "string" || !SCREENSHOT_MIME_TYPES.has(value.mimeType as PromptImage["mimeType"])) {
+      throw new Error("Screenshots must be PNG, JPEG, or WebP images.");
+    }
+    totalBytes += base64ByteLength(value.data);
+    return { type: "image", data: value.data, mimeType: value.mimeType as PromptImage["mimeType"] };
+  });
+  if (totalBytes > MAX_SCREENSHOT_BYTES) throw new Error("Screenshots exceed the 5 MB combined limit.");
+  if (!message.trim() && images.length === 0) throw new Error("message or screenshot is required.");
+  return { message: message.trim() ? message : "Please examine the attached screenshot.", images };
+}
+
+function stateEvent(workspace: Workspace, model: string, configPath: string, sessionId: string, sessions: SessionSummary[], history: SmithEvent[], running: boolean, approvals: ApprovalState[], queuedPrompts: PendingPrompt[], contextUsage: ContextUsage, mcpServers: McpServerState[]): UiStateEvent {
   return {
     type: "state",
     workspace: workspace.root,
@@ -139,7 +170,7 @@ function stateEvent(workspace: Workspace, model: string, configPath: string, ses
     history: history.map((event) => ({ ...event })),
     running,
     approvals,
-    queuedPrompts: queuedPrompts.map((prompt) => ({ ...prompt })),
+    queuedPrompts: queuedPrompts.map(({ images, ...prompt }) => ({ ...prompt, imageCount: images.length })),
     contextUsage,
     mcpServers: mcpServers.map((server) => ({ ...server })),
   };
@@ -157,10 +188,10 @@ export async function startUiServer(options: UiServerOptions = {}): Promise<UiSe
   const selectedModelId = modelId ?? DEFAULT_MODEL_ID;
   const sessionStore = new SessionStore(workspace);
   const sessionRecord = options.newSession
-    ? await sessionStore.create(selectedModelId)
+    ? await sessionStore.createAndOpen(selectedModelId)
     : options.sessionId
-      ? await sessionStore.load(options.sessionId)
-      : await sessionStore.latest() ?? await sessionStore.create(selectedModelId);
+      ? await sessionStore.resume(options.sessionId)
+      : await sessionStore.openLatestOrCreate(selectedModelId);
   let activeSessionRecord: SessionRecord = sessionRecord;
   let sessionSummaries = await sessionStore.list();
   const approvals = new ApprovalManager(approvalPolicy);
@@ -173,7 +204,7 @@ export async function startUiServer(options: UiServerOptions = {}): Promise<UiSe
   let running = false;
   let activeRun: Promise<void> | undefined;
   let stopped = false;
-  const queuedPrompts: QueuedPrompt[] = [];
+  const queuedPrompts: PendingPrompt[] = [];
   const mcpServers: McpServerState[] = chromeMcp ? [{ name: "chrome-devtools", toolCount: chromeMcp.tools.length }] : [];
   let events: SseHub;
 
@@ -215,15 +246,15 @@ export async function startUiServer(options: UiServerOptions = {}): Promise<UiSe
   }
   approvals.subscribe((event) => events.publish(event));
 
-  const runPrompt = (prompt: QueuedPrompt): void => {
+  const runPrompt = (prompt: PendingPrompt): void => {
     running = true;
     if (activeSessionRecord.title === "New session") void sessionStore.setTitle(activeSessionRecord, prompt.message);
-    const promptStart: SmithEvent = { type: "prompt_start", promptId: prompt.id, message: prompt.message };
+    const promptStart: SmithEvent = { type: "prompt_start", promptId: prompt.id, message: prompt.message, imageCount: prompt.images.length };
     activeSessionRecord.promptMessageStarts[prompt.id] = session.messageCount;
     activeSessionRecord.history.push(promptStart);
     events.publish(promptStart);
     events.publish(currentState());
-    const run = Promise.resolve().then(() => session.prompt(prompt.message)).catch((error: unknown) => {
+    const run = Promise.resolve().then(() => session.prompt(prompt.message, prompt.images)).catch((error: unknown) => {
       events.publish({ type: "error", message: error instanceof Error ? error.message : String(error) });
     });
     activeRun = run.finally(() => {
@@ -244,8 +275,8 @@ export async function startUiServer(options: UiServerOptions = {}): Promise<UiSe
     void activeRun;
   };
 
-  const submitPrompt = (message: string): { accepted: true; queued: boolean; id: string } => {
-    const prompt: QueuedPrompt = { id: randomUUID(), message, createdAt: Date.now() };
+  const submitPrompt = (message: string, images: PromptImage[]): { accepted: true; queued: boolean; id: string } => {
+    const prompt: PendingPrompt = { id: randomUUID(), message, images, createdAt: Date.now() };
     if (activeRun) {
       queuedPrompts.push(prompt);
       events.publish(currentState());
@@ -282,13 +313,16 @@ export async function startUiServer(options: UiServerOptions = {}): Promise<UiSe
       try {
         const body = await requestBody(request);
         if (url.pathname === "/api/prompt") {
-          return json(submitPrompt(messageFrom(body)), 202);
+          const prompt = promptFrom(body);
+          return json(submitPrompt(prompt.message, prompt.images), 202);
         }
 
         if (url.pathname === "/api/session/new") {
           if (activeRun) return json({ error: "Cannot switch sessions while a run is active." }, 409);
-          const record = await sessionStore.create(selectedModelId);
+          const previousId = activeSessionRecord.id;
+          const record = await sessionStore.createAndOpen(selectedModelId);
           attachSession(record);
+          await sessionStore.release(previousId);
           sessionSummaries = await sessionStore.list();
           events.publish(currentState());
           return json({ accepted: true, sessionId: record.id }, 202);
@@ -296,8 +330,10 @@ export async function startUiServer(options: UiServerOptions = {}): Promise<UiSe
         if (url.pathname === "/api/session/select") {
           if (activeRun) return json({ error: "Cannot switch sessions while a run is active." }, 409);
           if (typeof body.sessionId !== "string") return json({ error: "sessionId is required." }, 400);
-          const record = await sessionStore.load(body.sessionId);
+          const previousId = activeSessionRecord.id;
+          const record = await sessionStore.resume(body.sessionId);
           attachSession(record);
+          if (record.id !== previousId) await sessionStore.release(previousId);
           sessionSummaries = await sessionStore.list();
           events.publish(currentState());
           return json({ accepted: true, sessionId: record.id }, 202);
@@ -307,7 +343,7 @@ export async function startUiServer(options: UiServerOptions = {}): Promise<UiSe
           if (typeof body.sessionId !== "string") return json({ error: "sessionId is required." }, 400);
           if (body.sessionId !== activeSessionRecord.id) return json({ error: "Only the active session can be deleted." }, 409);
           await sessionStore.delete(body.sessionId);
-          const record = await sessionStore.latest() ?? await sessionStore.create(selectedModelId);
+          const record = await sessionStore.openLatestOrCreate(selectedModelId);
           attachSession(record);
           sessionSummaries = await sessionStore.list();
           events.publish(currentState());
@@ -377,6 +413,7 @@ export async function startUiServer(options: UiServerOptions = {}): Promise<UiSe
       events.close();
       void server.stop(true);
       unsubscribeSession();
+      void sessionStore.close();
       void chromeMcp?.close();
     },
   };

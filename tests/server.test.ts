@@ -171,6 +171,23 @@ describe("browser server", () => {
     ]);
   });
 
+  test("rejects malformed screenshot payloads", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "smith-ui-screenshot-"));
+    temporaryDirectories.push(directory);
+    process.env.UDAL_PAT = "test-bcai-key";
+
+    const server = await startUiServer({ workspacePath: directory, port: 0 });
+    servers.push(server);
+    const response = await fetch(new URL("api/prompt", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "Inspect this", images: [{ type: "image", mimeType: "image/png", data: "not-base64" }] }),
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "screenshot data must be valid base64." });
+  });
+
   test("rejects cancellation for unknown queued prompts", async () => {
     const directory = await mkdtemp(join(tmpdir(), "smith-ui-"));
     temporaryDirectories.push(directory);

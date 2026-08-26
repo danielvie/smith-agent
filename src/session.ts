@@ -1,4 +1,5 @@
-import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { mkdir, open, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import type { FileHandle } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
@@ -7,8 +8,9 @@ import type { Workspace } from "./workspace";
 
 export const SESSION_DIRECTORY = ".smith/sessions";
 const SESSION_VERSION = 1;
-const MAX_SESSION_BYTES = 8 * 1024 * 1024;
+const MAX_SESSION_BYTES = 64 * 1024 * 1024;
 const SESSION_ID_PATTERN = /^[0-9a-f-]{36}$/iu;
+const RENAME_RETRY_DELAYS_MS = [25, 50, 100, 200, 400];
 
 export interface SessionRecord {
   version: 1;
@@ -70,6 +72,7 @@ export function branchSessionRecord(record: SessionRecord, promptId: string): vo
 
 export class SessionStore {
   private readonly directory: string;
+  private readonly locks = new Map<string, { handle: FileHandle; token: string }>();
   private writeQueue: Promise<void> = Promise.resolve();
 
   constructor(private readonly workspace: Workspace) {
@@ -78,18 +81,7 @@ export class SessionStore {
 
   async create(modelId: string): Promise<SessionRecord> {
     await this.ensureDirectory();
-    const now = Date.now();
-    const record: SessionRecord = {
-      version: SESSION_VERSION,
-      id: randomUUID(),
-      title: "New session",
-      modelId,
-      createdAt: now,
-      updatedAt: now,
-      messages: [],
-      history: [],
-      promptMessageStarts: {},
-    };
+    const record = this.newRecord(modelId);
     await this.write(record);
     return record;
   }
@@ -97,6 +89,50 @@ export class SessionStore {
   async latest(): Promise<SessionRecord | undefined> {
     const sessions = await this.listRecords();
     return sessions[0];
+  }
+
+  async openLatestOrCreate(modelId: string): Promise<SessionRecord> {
+    const latest = await this.latest();
+    if (latest && await this.claim(latest.id)) return latest;
+    return this.createAndOpen(modelId);
+  }
+
+  async createAndOpen(modelId: string): Promise<SessionRecord> {
+    const record = this.newRecord(modelId);
+    if (!await this.claim(record.id)) throw new SessionError(`Could not open new session: ${record.id}`);
+    try {
+      await this.write(record);
+      return record;
+    } catch (error) {
+      await this.release(record.id);
+      throw error;
+    }
+  }
+
+  async resume(id: string): Promise<SessionRecord> {
+    if (!await this.claim(id)) throw new SessionError(`Session is already open in another Smith instance: ${id}`);
+    try {
+      return await this.read(id);
+    } catch (error) {
+      await this.release(id);
+      throw error;
+    }
+  }
+
+  async release(id: string): Promise<void> {
+    const lock = this.locks.get(id);
+    if (!lock) return;
+    this.locks.delete(id);
+    await lock.handle.close();
+    try {
+      if (await readFile(this.lockPath(id), "utf8") === lock.token) await unlink(this.lockPath(id));
+    } catch {
+      // Another process may have recovered a stale lock after this process exited.
+    }
+  }
+
+  async close(): Promise<void> {
+    await Promise.all([...this.locks.keys()].map((id) => this.release(id)));
   }
 
   async list(): Promise<SessionSummary[]> {
@@ -129,9 +165,74 @@ export class SessionStore {
     await this.writeQueue;
     try {
       await unlink(join(this.directory, `${id}.json`));
+      await this.release(id);
     } catch (error) {
       throw new SessionError(`Could not delete session ${id}: ${error instanceof Error ? error.message : String(error)}`);
     }
+  }
+
+  private newRecord(modelId: string): SessionRecord {
+    const now = Date.now();
+    return {
+      version: SESSION_VERSION,
+      id: randomUUID(),
+      title: "New session",
+      modelId,
+      createdAt: now,
+      updatedAt: now,
+      messages: [],
+      history: [],
+      promptMessageStarts: {},
+    };
+  }
+
+  private async claim(id: string): Promise<boolean> {
+    if (!SESSION_ID_PATTERN.test(id)) throw new SessionError(`Invalid session id: ${id}`);
+    if (this.locks.has(id)) return true;
+    await this.ensureDirectory();
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const token = `${process.pid}:${randomUUID()}`;
+      try {
+        const handle = await open(this.lockPath(id), "wx");
+        await handle.writeFile(token, "utf8");
+        this.locks.set(id, { handle, token });
+        return true;
+      } catch (error) {
+        const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
+        if (code !== "EEXIST") throw new SessionError(`Could not open session ${id}: ${error instanceof Error ? error.message : String(error)}`);
+        if (await this.lockHasLiveOwner(id)) return false;
+        try {
+          await unlink(this.lockPath(id));
+        } catch (unlinkError) {
+          const unlinkCode = unlinkError && typeof unlinkError === "object" && "code" in unlinkError ? unlinkError.code : undefined;
+          if (unlinkCode !== "ENOENT") throw new SessionError(`Could not recover session lock ${id}: ${unlinkError instanceof Error ? unlinkError.message : String(unlinkError)}`);
+        }
+      }
+    }
+    return false;
+  }
+
+  private async lockHasLiveOwner(id: string): Promise<boolean> {
+    let token: string;
+    try {
+      token = await readFile(this.lockPath(id), "utf8");
+    } catch {
+      return false;
+    }
+    const pid = Number(token.split(":", 1)[0]);
+    if (!Number.isInteger(pid) || pid < 1) return false;
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error) {
+      const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
+      return code !== "ESRCH";
+    }
+  }
+
+  private lockPath(id: string): string {
+    return join(this.directory, `${id}.lock`);
   }
 
   private async listRecords(): Promise<SessionRecord[]> {
@@ -189,13 +290,28 @@ export class SessionStore {
       .then(async () => {
         try {
           await writeFile(temporaryPath, content, "utf8");
-          await rename(temporaryPath, path);
+          await this.renameWithRetry(temporaryPath, path);
         } catch (error) {
           throw new SessionError(`Could not save session ${record.id}: ${error instanceof Error ? error.message : String(error)}`);
+        } finally {
+          await unlink(temporaryPath).catch(() => undefined);
         }
       });
     this.writeQueue = operation.then(() => undefined, () => undefined);
     return operation;
+  }
+
+  private async renameWithRetry(source: string, destination: string): Promise<void> {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await rename(source, destination);
+        return;
+      } catch (error) {
+        const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
+        if ((code !== "EPERM" && code !== "EACCES") || attempt >= RENAME_RETRY_DELAYS_MS.length) throw error;
+        await new Promise<void>((resolve) => setTimeout(resolve, RENAME_RETRY_DELAYS_MS[attempt]));
+      }
+    }
   }
 
   private async ensureDirectory(): Promise<void> {

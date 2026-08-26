@@ -1,11 +1,95 @@
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
 import { createRoot } from "react-dom/client";
+import { Group, Panel, Separator } from "react-resizable-panels";
 import { Markdown } from "./markdown";
-import type { ApprovalDecision, ApprovalState, QueuedPrompt, SmithEvent, UiEvent, UiStateEvent } from "../protocol";
+import type { ApprovalDecision, ApprovalState, PromptImage, QueuedPrompt, SmithEvent, UiEvent, UiStateEvent } from "../protocol";
 
 type Density = "read" | "digest";
 
 const DENSITY_STORAGE_KEY = "smith.transcript-density";
+const MAX_SCREENSHOTS = 4;
+const MAX_SCREENSHOT_BYTES = 5 * 1024 * 1024;
+const SCREENSHOT_MIME_TYPES = new Set<PromptImage["mimeType"]>(["image/png", "image/jpeg", "image/webp"]);
+const IMAGE_MARKER_PATTERN = /\uE000([0-9a-f-]+)\uE001/gu;
+
+type DraftImage = { id: string; image: PromptImage };
+
+function imageMarker(id: string): string {
+  return `\uE000${id}\uE001`;
+}
+
+function markerIds(draft: string): string[] {
+  return [...draft.matchAll(IMAGE_MARKER_PATTERN)].map((match) => match[1]);
+}
+
+function promptText(draft: string): string {
+  let imageNumber = 0;
+  return draft.replace(IMAGE_MARKER_PATTERN, () => `[Image ${++imageNumber}]`);
+}
+
+function createImageMarker(attachment: DraftImage): HTMLSpanElement {
+  const marker = document.createElement("span");
+  marker.dataset.imageId = attachment.id;
+  marker.contentEditable = "false";
+  marker.tabIndex = 0;
+  marker.className = "prompt-image-marker relative mx-0.5 inline-flex cursor-pointer items-center rounded-[3px] border border-line-2 bg-[#252a36] px-1.5 py-0.5 align-baseline font-mono text-[12px] text-ink-2 outline-none hover:border-accent focus:border-accent";
+  marker.textContent = "▧ Image";
+
+  const preview = document.createElement("span");
+  preview.className = "prompt-image-preview pointer-events-none fixed z-30 hidden rounded-[5px] border border-line-2 bg-bg-bar p-2 shadow-2xl";
+  const image = document.createElement("img");
+  image.className = "block max-h-[320px] max-w-[480px] object-contain";
+  image.src = `data:${attachment.image.mimeType};base64,${attachment.image.data}`;
+  image.alt = "Pasted screenshot preview";
+  preview.append(image);
+  marker.append(preview);
+  marker.addEventListener("click", (event) => {
+    event.stopPropagation();
+    const wasOpen = !preview.classList.contains("hidden");
+    document.querySelectorAll(".prompt-image-preview").forEach((item) => item.classList.add("hidden"));
+    if (!wasOpen) {
+      const bounds = marker.getBoundingClientRect();
+      preview.style.left = `${Math.max(8, Math.min(bounds.left, window.innerWidth - 504))}px`;
+      preview.style.bottom = `${window.innerHeight - bounds.top + 8}px`;
+      preview.classList.remove("hidden");
+    }
+  });
+  return marker;
+}
+
+function appendTextWithBreaks(parent: Node, value: string): void {
+  value.split("\n").forEach((part, index) => {
+    if (index > 0) parent.appendChild(document.createElement("br"));
+    if (part) parent.appendChild(document.createTextNode(part));
+  });
+}
+
+function renderPromptEditor(editor: HTMLDivElement, draft: string, attachments: DraftImage[]): void {
+  const images = new Map(attachments.map((attachment) => [attachment.id, attachment]));
+  const fragment = document.createDocumentFragment();
+  let cursor = 0;
+  for (const match of draft.matchAll(IMAGE_MARKER_PATTERN)) {
+    appendTextWithBreaks(fragment, draft.slice(cursor, match.index));
+    const attachment = images.get(match[1]);
+    if (attachment) fragment.appendChild(createImageMarker(attachment));
+    cursor = (match.index ?? 0) + match[0].length;
+  }
+  appendTextWithBreaks(fragment, draft.slice(cursor));
+  editor.replaceChildren(fragment);
+}
+
+function serializePromptEditor(editor: HTMLDivElement): string {
+  const serialize = (node: Node): string => {
+    if (node.nodeType === 3) return node.textContent ?? "";
+    if (!(node instanceof HTMLElement)) return "";
+    const imageId = node.dataset.imageId;
+    if (imageId) return imageMarker(imageId);
+    if (node.tagName === "BR") return "\n";
+    const content = [...node.childNodes].map(serialize).join("");
+    return node.tagName === "DIV" || node.tagName === "P" ? `${content}\n` : content;
+  };
+  return [...editor.childNodes].map(serialize).join("").replace(/\n$/u, "");
+}
 
 function storedDensity(): Density {
   try {
@@ -17,8 +101,9 @@ function storedDensity(): Density {
 }
 
 type TranscriptNode =
-  | { id: string; kind: "user"; at: string; content: string }
+  | { id: string; kind: "user"; at: string; content: string; imageCount?: number }
   | { id: string; kind: "assistant"; at: string; content: string }
+  | { id: string; kind: "thinking"; at: string; content: string }
   | { id: string; kind: "system"; at: string; content: string }
   | { id: string; kind: "tool"; at: string; toolName: string; args: string; result?: string; status: "running" | "ok" | "error" };
 
@@ -32,6 +117,26 @@ function makeId(prefix: string): string {
 
 function clockNow(): string {
   return new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+}
+
+function base64ByteLength(value: string): number {
+  const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
+  return value.length / 4 * 3 - padding;
+}
+
+function readScreenshot(file: File): Promise<PromptImage> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error(`Could not read screenshot: ${file.name || "clipboard image"}`));
+    reader.onload = () => {
+      const result = reader.result;
+      if (typeof result !== "string") return reject(new Error("Could not read screenshot data."));
+      const separator = result.indexOf(",");
+      if (separator < 0) return reject(new Error("Could not decode screenshot data."));
+      resolve({ type: "image", mimeType: file.type as PromptImage["mimeType"], data: result.slice(separator + 1) });
+    };
+    reader.readAsDataURL(file);
+  });
 }
 
 function formatValue(value: unknown): string {
@@ -140,9 +245,83 @@ function ApprovalNode({ approval, decide }: { approval: ApprovalState; decide: D
   );
 }
 
-function QueuedNode({ prompt, position, total, onEdit, onCancel }: { prompt: QueuedPrompt; position: number; total: number; onEdit: () => void; onCancel: () => void }) {
+type ConversationActivity = Extract<TranscriptNode, { kind: "tool" | "thinking" }>;
+type ConversationTurn = {
+  id: string;
+  user?: Extract<TranscriptNode, { kind: "user" }>;
+  answer: string;
+  activity: ConversationActivity[];
+  errors: Extract<TranscriptNode, { kind: "system" }>[];
+};
+
+function conversationTurns(nodes: TranscriptNode[]): ConversationTurn[] {
+  const turns: ConversationTurn[] = [];
+  let turn: ConversationTurn | undefined;
+  const ensureTurn = (id: string) => {
+    turn ??= { id, answer: "", activity: [], errors: [] };
+    return turn;
+  };
+
+  for (const node of nodes) {
+    if (node.kind === "user") {
+      if (turn) turns.push(turn);
+      turn = { id: node.id, user: node, answer: "", activity: [], errors: [] };
+    } else if (node.kind === "assistant") {
+      ensureTurn(node.id).answer += node.content;
+    } else if (node.kind === "system") {
+      ensureTurn(node.id).errors.push(node);
+    } else {
+      ensureTurn(node.id).activity.push(node);
+    }
+  }
+  if (turn) turns.push(turn);
+  return turns;
+}
+
+function ConversationTurnCard({ turn, running, editSent }: { turn: ConversationTurn; running: boolean; editSent: (node: Extract<TranscriptNode, { kind: "user" }>) => void | Promise<void> }) {
   return (
-    <Node tone="queued" at={`q${position}`} sigil={SIGIL.queued} kind={`queued ${position}/${total}`} summary={prompt.message}>
+    <article className="conversation-turn">
+      {turn.user && (
+        <section className="conversation-question">
+          <header><span>You asked</span><button type="button" onClick={() => void editSent(turn.user!)}>Edit</button></header>
+          <p>{turn.user.content}</p>
+          {Boolean(turn.user.imageCount) && <small>{turn.user.imageCount} screenshot{turn.user.imageCount === 1 ? "" : "s"} attached</small>}
+        </section>
+      )}
+      {turn.activity.length > 0 && (
+        <details className="conversation-activity">
+          <summary>{turn.activity.length} hidden step{turn.activity.length === 1 ? "" : "s"} · thinking and tools</summary>
+          <div className="conversation-activity-list">
+            {turn.activity.map((item) => item.kind === "thinking" ? (
+              <div className="conversation-activity-row" key={item.id}>
+                <span className="conversation-activity-icon">◇</span>
+                <strong>Thinking</strong>
+                <span>{item.content}</span>
+              </div>
+            ) : (
+              <div className={`conversation-activity-row${item.status === "running" ? " is-running" : ""}`} key={item.id}>
+                <span className="conversation-activity-icon">⌕</span>
+                <strong>{item.toolName}</strong>
+                <span>{item.args}</span>
+                <em>{item.status === "running" ? "running" : item.status === "error" ? "failed" : "done"}</em>
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
+      <section className={`conversation-answer${running ? " is-streaming" : ""}`}>
+        <span className="conversation-label">Smith replied</span>
+        {turn.answer ? <Markdown source={turn.answer} /> : <p className="conversation-working">Smith is working…</p>}
+        {turn.errors.map((error) => <p className="conversation-error" key={error.id}>{error.content}</p>)}
+      </section>
+    </article>
+  );
+}
+
+function QueuedNode({ prompt, position, total, onEdit, onCancel }: { prompt: QueuedPrompt; position: number; total: number; onEdit: () => void; onCancel: () => void }) {
+  const attachmentLabel = prompt.imageCount ? ` · ${prompt.imageCount} screenshot${prompt.imageCount === 1 ? "" : "s"}` : "";
+  return (
+    <Node tone="queued" at={`q${position}`} sigil={SIGIL.queued} kind={`queued ${position}/${total}`} summary={`${prompt.message}${attachmentLabel}`}>
       <div className="flex items-center gap-2.5 font-mono text-[12px] text-[#7b8496]">
         <p className="m-0 min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap">{prompt.message}</p>
         <button type="button" className="text-[11px] text-[#5a6273] hover:text-ink" onClick={onEdit}>
@@ -165,6 +344,7 @@ function Transcript({
   cancelQueued,
   workspace,
   running,
+  density,
   editSent,
 }: {
   nodes: TranscriptNode[];
@@ -175,6 +355,7 @@ function Transcript({
   cancelQueued: (id: string) => void;
   workspace: string;
   running: boolean;
+  density: Density;
   editSent: (node: Extract<TranscriptNode, { kind: "user" }>) => void | Promise<void>;
 }) {
   const scroll = useRef<HTMLDivElement>(null);
@@ -197,10 +378,11 @@ function Transcript({
   const empty = nodes.length === 0 && approvals.length === 0 && queued.length === 0;
   const lastNode = nodes[nodes.length - 1];
   const activeAssistantId = running && lastNode?.kind === "assistant" ? lastNode.id : undefined;
-  const showProcessingBand = running && approvals.length === 0 && (!lastNode || lastNode.kind === "user" || (lastNode.kind === "tool" && lastNode.status !== "running"));
+  const showProcessingBand = running && approvals.length === 0 && (!lastNode || lastNode.kind === "user" || lastNode.kind === "thinking" || (lastNode.kind === "tool" && lastNode.status !== "running"));
+  const turns = conversationTurns(nodes);
 
   return (
-    <div className="overflow-x-hidden overflow-y-auto [scrollbar-gutter:stable]" ref={scroll} onScroll={onScroll} aria-live="polite">
+    <div className="h-full overflow-x-hidden overflow-y-auto [scrollbar-gutter:stable]" ref={scroll} onScroll={onScroll} aria-live="polite">
       {empty ? (
         <div className="grid h-full place-items-center p-6">
           <p className="m-0 max-w-[460px] text-center font-mono text-[12.5px] leading-[1.8] text-ink-3">
@@ -211,6 +393,12 @@ function Transcript({
         </div>
       ) : (
         <>
+          {density === "read" ? (
+            <div className="conversation-turns">
+              {turns.map((turn, index) => <ConversationTurnCard turn={turn} running={running && index === turns.length - 1} editSent={editSent} key={turn.id} />)}
+            </div>
+          ) : (
+            <>
           {nodes.map((node) => {
             if (node.kind === "user") {
               return (
@@ -227,16 +415,17 @@ function Transcript({
                       <button type="button" className="rounded-[3px] border border-line-2 px-2 py-0.5 font-mono text-[11px] text-ink-3 hover:text-ink" onClick={() => void editSent(node)} aria-label="Edit and resend this message">
                         Edit
                       </button>
-                      <span className="font-mono text-[9px] tracking-[.08em] uppercase">branch</span>
                     </div>
                   }
                   key={node.id}
                 >
                   <p className="m-0 text-[15.5px] leading-[1.5] text-[#f4f6fb]">{node.content}</p>
+                  {Boolean(node.imageCount) && <p className="mt-2 mb-0 font-mono text-[11px] text-accent">{node.imageCount} screenshot{node.imageCount === 1 ? "" : "s"} attached</p>}
                 </Node>
               );
             }
             if (node.kind === "tool") return <ToolNode node={node} expanded={expandedNodeId === node.id} onToggle={() => toggleNode(node.id)} key={node.id} />;
+            if (node.kind === "thinking") return null;
             if (node.kind === "system") {
               return (
                 <Node tone="system" at={node.at} sigil={SIGIL.system} kind="error" summary={node.content} expanded={expandedNodeId === node.id} onToggle={() => toggleNode(node.id)} key={node.id}>
@@ -255,6 +444,8 @@ function Transcript({
             <Node tone="processing" at="now" sigil={SIGIL.assistant} kind="smith" summary="working…" active>
               <p className="m-0 animate-[smith-pulse_1.1s_ease-in-out_infinite] font-mono text-[12px] text-ink-3">working…</p>
             </Node>
+          )}
+            </>
           )}
 
           {approvals.map((approval) => (
@@ -280,42 +471,106 @@ function Transcript({
 function Composer({
   draft,
   setDraft,
+  attachments,
+  pasteImages,
+  syncAttachmentIds,
   submit,
   running,
   error,
-  textareaRef,
+  editorRef,
 }: {
   draft: string;
   setDraft: (value: string) => void;
+  attachments: DraftImage[];
+  pasteImages: (files: File[]) => Promise<DraftImage[]>;
+  syncAttachmentIds: (ids: string[]) => void;
   submit: (event: Pick<FormEvent, "preventDefault">) => void | Promise<void>;
   running: boolean;
   error?: string;
-  textareaRef: React.RefObject<HTMLTextAreaElement | null>;
+  editorRef: React.RefObject<HTMLDivElement | null>;
 }) {
-  function onKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
+  useLayoutEffect(() => {
+    const editor = editorRef.current;
+    if (editor && serializePromptEditor(editor) !== draft) renderPromptEditor(editor, draft, attachments);
+  }, [attachments, draft, editorRef]);
+
+  useEffect(() => {
+    const closePreview = (event: PointerEvent) => {
+      if (event.target instanceof Element && event.target.closest(".prompt-image-marker")) return;
+      document.querySelectorAll(".prompt-image-preview").forEach((item) => item.classList.add("hidden"));
+    };
+    document.addEventListener("pointerdown", closePreview);
+    return () => document.removeEventListener("pointerdown", closePreview);
+  }, []);
+
+  function syncEditor() {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const value = serializePromptEditor(editor);
+    setDraft(value);
+    syncAttachmentIds(markerIds(value));
+  }
+
+  function onKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       void submit(event);
     }
   }
 
+  async function onPaste(event: React.ClipboardEvent<HTMLDivElement>) {
+    const files = [...event.clipboardData.items]
+      .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => file !== null);
+    if (files.length === 0) return;
+    event.preventDefault();
+
+    const editor = editorRef.current;
+    const selection = window.getSelection();
+    const selectedRange = selection?.rangeCount ? selection.getRangeAt(0) : undefined;
+    const range = selectedRange && editor?.contains(selectedRange.commonAncestorContainer) ? selectedRange.cloneRange() : undefined;
+    const pasted = await pasteImages(files);
+    if (!editor || pasted.length === 0) return;
+
+    const insertion = range && range.startContainer.isConnected ? range : document.createRange();
+    if (!range || !range.startContainer.isConnected) {
+      insertion.selectNodeContents(editor);
+      insertion.collapse(false);
+    }
+    insertion.deleteContents();
+    for (const attachment of pasted) {
+      const marker = createImageMarker(attachment);
+      insertion.insertNode(marker);
+      insertion.setStartAfter(marker);
+      insertion.collapse(true);
+    }
+    selection?.removeAllRanges();
+    selection?.addRange(insertion);
+    syncEditor();
+  }
+
   return (
-    <form className="border-t border-line bg-bg-bar" onSubmit={(event) => void submit(event)}>
-      {error && <p className="mx-auto mt-0 max-w-measure px-[26px] pt-2.5 pb-0 [padding-left:var(--gutter)] font-mono text-[11.5px] text-danger">{error}</p>}
-      <div className="mx-auto flex max-w-measure items-start gap-2.5 pt-[11px] pr-[26px] pb-[15px] [padding-left:calc(var(--gutter)-22px)] max-[700px]:[padding-left:calc(var(--gutter)-20px)]">
+    <form className="flex h-full flex-col bg-bg-bar" onSubmit={(event) => void submit(event)}>
+      {error && <p className="mx-auto mt-0 w-full max-w-measure px-[26px] pt-2.5 pb-0 [padding-left:var(--gutter)] font-mono text-[11.5px] text-danger">{error}</p>}
+      <div className="mx-auto flex min-h-0 w-full max-w-measure flex-1 items-stretch gap-2.5 pt-[11px] pr-[26px] pb-[15px] [padding-left:calc(var(--gutter)-22px)] max-[700px]:[padding-left:calc(var(--gutter)-20px)]">
         <span className="pt-[3px] font-mono text-[13px] text-accent" aria-hidden="true">
           {SIGIL.user}
         </span>
-        <textarea
-          ref={textareaRef}
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
+        <div
+          ref={editorRef}
+          contentEditable
+          suppressContentEditableWarning
+          role="textbox"
+          aria-label="Message"
+          aria-multiline="true"
+          data-placeholder={running ? "Send to queue…" : "Ask Smith to inspect or modify the workspace"}
+          onInput={syncEditor}
           onKeyDown={onKeyDown}
-          placeholder={running ? "Send to queue…" : "Ask Smith to inspect or modify the workspace"}
-          rows={2}
-          className="min-w-0 flex-1 resize-none border-0 bg-transparent text-[14.5px] leading-[1.5] outline-none placeholder:text-ink-5"
+          onPaste={(event) => void onPaste(event)}
+          className="prompt-editor min-h-0 min-w-0 flex-1 overflow-y-auto whitespace-pre-wrap border-0 bg-transparent text-[14.5px] leading-[1.5] outline-none"
         />
-        <button type="submit" className="rounded-sm bg-accent px-[15px] py-[5px] text-[12.5px] font-[640] text-accent-ink hover:brightness-[1.08]">Send</button>
+        <button type="submit" className="self-start rounded-sm bg-accent px-[15px] py-[5px] text-[12.5px] font-[640] text-accent-ink hover:brightness-[1.08]">Send</button>
       </div>
     </form>
   );
@@ -476,6 +731,8 @@ function App() {
   const [nodes, setNodes] = useState<TranscriptNode[]>([]);
   const [approvals, setApprovals] = useState<ApprovalState[]>([]);
   const [draft, setDraft] = useState("");
+  const [attachments, setAttachments] = useState<DraftImage[]>([]);
+  const queuedDrafts = useRef(new Map<string, { draft: string; attachments: DraftImage[] }>());
   const [density, setDensity] = useState<Density>(storedDensity);
   const [state, setState] = useState<UiStateEvent>({
     type: "state",
@@ -493,7 +750,7 @@ function App() {
   const [error, setError] = useState<string | undefined>();
   const [renamingSession, setRenamingSession] = useState(false);
   const [sessionTitleDraft, setSessionTitleDraft] = useState("");
-  const composerRef = useRef<HTMLTextAreaElement>(null);
+  const composerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     try {
@@ -535,7 +792,8 @@ function App() {
 
   function applyAgentEvent(event: SmithEvent) {
     if (event.type === "prompt_start") {
-      setNodes((current) => [...current, { id: event.promptId, kind: "user", at: clockNow(), content: event.message }]);
+      queuedDrafts.current.delete(event.promptId);
+      setNodes((current) => [...current, { id: event.promptId, kind: "user", at: clockNow(), content: event.message, imageCount: event.imageCount }]);
       return;
     }
     if (event.type === "text_delta") {
@@ -546,7 +804,14 @@ function App() {
       });
       return;
     }
-    if (event.type === "thinking_delta") return;
+    if (event.type === "thinking_delta") {
+      setNodes((current) => {
+        const last = current[current.length - 1];
+        if (last?.kind === "thinking") return [...current.slice(0, -1), { ...last, content: last.content + event.delta }];
+        return [...current, { id: makeId("thinking"), kind: "thinking", at: clockNow(), content: event.delta }];
+      });
+      return;
+    }
     if (event.type === "tool_start") {
       setNodes((current) => [
         ...current,
@@ -576,26 +841,60 @@ function App() {
     }
   }
 
-  async function post(path: string, body: Record<string, unknown> = {}) {
+  async function post(path: string, body: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
     const response = await fetch(path, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    const payload = await response.json().catch(() => ({}));
+    const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
     if (!response.ok) throw new Error(typeof payload.error === "string" ? payload.error : `Request failed: ${response.status}`);
+    return payload;
   }
 
   async function submit(event: Pick<FormEvent, "preventDefault">) {
     event.preventDefault();
-    const message = draft.trim();
-    if (!message) return;
+    const originalDraft = draft;
+    const imagesById = new Map(attachments.map((attachment) => [attachment.id, attachment]));
+    const submittedAttachments = markerIds(draft).map((id) => imagesById.get(id)).filter((attachment): attachment is DraftImage => attachment !== undefined);
+    const message = promptText(draft).trim();
+    if (!message && submittedAttachments.length === 0) return;
     setError(undefined);
     setDraft("");
+    setAttachments([]);
     try {
-      await post("/api/prompt", { message });
+      const response = await post("/api/prompt", { message, images: submittedAttachments.map((attachment) => attachment.image) });
+      if (response.queued === true && typeof response.id === "string") queuedDrafts.current.set(response.id, { draft: originalDraft, attachments: submittedAttachments });
     } catch (requestError) {
+      setDraft(originalDraft);
+      setAttachments(submittedAttachments);
       setError(requestError instanceof Error ? requestError.message : String(requestError));
+    }
+  }
+
+  async function pasteImages(files: File[]): Promise<DraftImage[]> {
+    const unsupported = files.find((file) => !SCREENSHOT_MIME_TYPES.has(file.type as PromptImage["mimeType"]));
+    if (unsupported) {
+      setError("Screenshots must be PNG, JPEG, or WebP images.");
+      return [];
+    }
+    if (attachments.length + files.length > MAX_SCREENSHOTS) {
+      setError(`A prompt can contain at most ${MAX_SCREENSHOTS} screenshots.`);
+      return [];
+    }
+    const currentBytes = attachments.reduce((total, attachment) => total + base64ByteLength(attachment.image.data), 0);
+    if (currentBytes + files.reduce((total, file) => total + file.size, 0) > MAX_SCREENSHOT_BYTES) {
+      setError("Screenshots exceed the 5 MB combined limit.");
+      return [];
+    }
+    try {
+      const pasted = (await Promise.all(files.map(readScreenshot))).map((image) => ({ id: crypto.randomUUID(), image }));
+      setAttachments((current) => [...current, ...pasted]);
+      setError(undefined);
+      return pasted;
+    } catch (pasteError) {
+      setError(pasteError instanceof Error ? pasteError.message : String(pasteError));
+      return [];
     }
   }
 
@@ -617,6 +916,8 @@ function App() {
 
   async function createSession() {
     setRenamingSession(false);
+    setDraft("");
+    setAttachments([]);
     try {
       await post("/api/session/new");
     } catch (requestError) {
@@ -628,6 +929,8 @@ function App() {
     const session = state.sessions.find((item) => item.id === state.sessionId);
     if (!session || !window.confirm(`Delete session "${session.title}"? This cannot be undone.`)) return;
     setRenamingSession(false);
+    setDraft("");
+    setAttachments([]);
     try {
       await post("/api/session/delete", { sessionId: session.id });
       setError(undefined);
@@ -639,6 +942,8 @@ function App() {
   async function selectSession(sessionId: string) {
     if (!sessionId || sessionId === state.sessionId) return;
     setRenamingSession(false);
+    setDraft("");
+    setAttachments([]);
     try {
       await post("/api/session/select", { sessionId });
       setError(undefined);
@@ -678,13 +983,16 @@ function App() {
   async function cancelQueued(queueId: string) {
     try {
       await post("/api/queue/cancel", { queueId });
+      queuedDrafts.current.delete(queueId);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : String(requestError));
     }
   }
 
   async function editQueued(prompt: QueuedPrompt) {
-    setDraft(prompt.message);
+    const queuedDraft = queuedDrafts.current.get(prompt.id);
+    setDraft(queuedDraft?.draft ?? prompt.message);
+    setAttachments(queuedDraft?.attachments ?? []);
     await cancelQueued(prompt.id);
     composerRef.current?.focus();
   }
@@ -693,6 +1001,7 @@ function App() {
     try {
       await post("/api/session/branch", { promptId: node.id });
       setDraft(node.content);
+      setAttachments([]);
       setError(undefined);
       composerRef.current?.focus();
     } catch (requestError) {
@@ -704,7 +1013,7 @@ function App() {
   const activeSession = state.sessions.find((session) => session.id === state.sessionId);
 
   return (
-    <main className="app grid h-full grid-rows-[auto_auto_minmax(0,1fr)_auto]" data-density={density}>
+    <main className="app grid h-full grid-rows-[auto_auto_minmax(0,1fr)]" data-density={density}>
       <Bar state={state} density={density} setDensity={setDensity} abort={abort} createSession={createSession} deleteSession={deleteSession} selectSession={selectSession} />
       <SessionTitle
         session={activeSession}
@@ -716,18 +1025,43 @@ function App() {
         saveRename={saveRenameSession}
         cancelRename={cancelRenameSession}
       />
-      <Transcript
-        nodes={nodes}
-        approvals={pending}
-        queued={state.queuedPrompts}
-        decide={decide}
-        editQueued={(prompt) => void editQueued(prompt)}
-        cancelQueued={(id) => void cancelQueued(id)}
-        workspace={state.workspace}
-        running={state.running}
-        editSent={editSent}
-      />
-      <Composer draft={draft} setDraft={setDraft} submit={submit} running={state.running} error={error} textareaRef={composerRef} />
+      <Group orientation="vertical" className="min-h-0" resizeTargetMinimumSize={{ coarse: 24, fine: 12 }}>
+        <Panel id="transcript" minSize="160px">
+          <Transcript
+            nodes={nodes}
+            approvals={pending}
+            queued={state.queuedPrompts}
+            decide={decide}
+            editQueued={(prompt) => void editQueued(prompt)}
+            cancelQueued={(id) => void cancelQueued(id)}
+            workspace={state.workspace}
+            running={state.running}
+            density={density}
+            editSent={editSent}
+          />
+        </Panel>
+        <Separator
+          id="message-bar-resize"
+          aria-label="Resize message bar"
+          className="relative h-px bg-line outline-none before:absolute before:inset-x-0 before:-inset-y-2 hover:bg-accent focus-visible:bg-accent data-[separator=active]:bg-accent"
+        />
+        <Panel id="composer" defaultSize="76px" minSize="70px" groupResizeBehavior="preserve-pixel-size">
+          <Composer
+            draft={draft}
+            setDraft={setDraft}
+            attachments={attachments}
+            pasteImages={pasteImages}
+            syncAttachmentIds={(ids) => setAttachments((current) => {
+              const byId = new Map(current.map((attachment) => [attachment.id, attachment]));
+              return ids.map((id) => byId.get(id)).filter((attachment): attachment is DraftImage => attachment !== undefined);
+            })}
+            submit={submit}
+            running={state.running}
+            error={error}
+            editorRef={composerRef}
+          />
+        </Panel>
+      </Group>
     </main>
   );
 }

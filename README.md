@@ -76,7 +76,7 @@ The rule applies to every future call of that tool in the current workspace. Rem
 
 ## Sessions
 
-Smith stores resumable sessions under `.smith/sessions/`. It resumes the most recently updated session by default. Session files contain the model transcript and UI history, and `.smith/` is ignored by Git because conversations can contain sensitive data.
+Smith stores resumable sessions under `.smith/sessions/`. It resumes the most recently updated session by default; if that session is open in another Smith instance, it starts a new session instead. Session files contain the model transcript and UI history, and `.smith/` is ignored by Git because conversations can contain sensitive data.
 
 The UI has a session picker plus New and Delete buttons. Delete confirms before removing the active session and creates a replacement when the last session is removed. In the CLI:
 
@@ -87,7 +87,9 @@ pnpm run run -- --session <session-id>
 
 While running the CLI, use `/sessions`, `/new`, or `/resume <session-id>` to switch sessions. Switching is disabled while a run is active.
 
-In the browser UI, use `Edit` on a sent message to branch from that point. Smith removes that prompt and all later history from the active session, restores the Pi context before it, and puts the old text in the composer for editing. Sending it creates the new continuation.
+In the browser UI, paste PNG, JPEG, or WebP screenshots into the message composer. Smith inserts an `Image` token at the caret; click the token to toggle its preview. A prompt can include up to four screenshots with a combined size of 5 MB.
+
+Use `Edit` on a sent message to branch from that point. Smith removes that prompt and all later history from the active session, restores the Pi context before it, and puts the old text in the composer for editing. Sending it creates the new continuation.
 
 ## Browser UI
 

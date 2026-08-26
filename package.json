@@ -15,8 +15,7 @@
     "ui:css": "tailwindcss -i src/web/styles.css -o src/web/styles.generated.css --minify",
     "ui:build": "pnpm run ui:css && bun build src/web/index.html --outdir dist/ui",
     "ui:check": "bun run scripts/verify-tailwind.ts",
-    "ui:prototype": "bun run src/web/prototype/serve.ts",
-    "ui:verify": "pnpm run ui:css && bun run src/web/prototype/verify.ts"
+    "ui:verify": "pnpm run ui:css && bun run scripts/verify-ui.ts"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "0.84.2",
@@ -28,7 +27,8 @@
     "katex": "^0.18.4",
     "marked": "^18.0.10",
     "react": "^19.2.8",
-    "react-dom": "^19.2.8"
+    "react-dom": "^19.2.8",
+    "react-resizable-panels": "^4.12.3"
   },
   "devDependencies": {
     "@tailwindcss/cli": "^4",

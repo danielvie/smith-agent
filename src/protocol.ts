@@ -17,17 +17,24 @@ export interface ApprovalState {
   reason?: string;
 }
 
+export interface PromptImage {
+  type: "image";
+  data: string;
+  mimeType: "image/png" | "image/jpeg" | "image/webp";
+}
+
 export interface QueuedPrompt {
   id: string;
   message: string;
   createdAt: number;
+  imageCount?: number;
 }
 
 export type ApprovalHandler = (request: ApprovalRequest, signal?: AbortSignal) => Promise<ApprovalDecision>;
 
 export type SmithEvent =
   | { type: "status"; status: "started" | "turn_started" | "completed" }
-  | { type: "prompt_start"; promptId: string; message: string }
+  | { type: "prompt_start"; promptId: string; message: string; imageCount?: number }
   | { type: "text_delta"; delta: string }
   | { type: "thinking_delta"; delta: string }
   | { type: "tool_start"; toolCallId: string; toolName: string; args: unknown }

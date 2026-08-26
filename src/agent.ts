@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Agent, type AgentEvent, type AgentMessage, type AgentTool, type AgentToolResult } from "@earendil-works/pi-agent-core";
-import { createModels, Type, type AssistantMessage, type Static } from "@earendil-works/pi-ai";
+import { createModels, Type, type AssistantMessage, type ImageContent, type Static } from "@earendil-works/pi-ai";
 import { fireworksProvider } from "@earendil-works/pi-ai/providers/fireworks";
 import type { BeforeToolCallContext } from "@earendil-works/pi-agent-core";
 import { BCAI_API_KEY_ENV, BCAI_MODEL_ID, BCAI_PROVIDER_ID, bcaiProvider } from "./providers/bcai";
@@ -332,8 +332,8 @@ export class SmithAgentSession {
     return () => this.listeners.delete(listener);
   }
 
-  prompt(input: string): Promise<void> {
-    return this.agent.prompt(input);
+  prompt(input: string, images: ImageContent[] = []): Promise<void> {
+    return this.agent.prompt(input, images);
   }
 
   steer(input: string): void {

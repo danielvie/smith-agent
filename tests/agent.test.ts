@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { AgentEvent, AgentMessage } from "@earendil-works/pi-agent-core";
 import { AgentConfigurationError, calculateContextUsage, createWorkspaceTools, mapPiEvent, SmithAgentSession } from "../src/agent";
-import { BCAI_API_URL, BCAI_MODEL_ID, bcaiProvider } from "../src/providers/bcai";
+import { BCAI_API_URL, BCAI_CONTEXT_WINDOW, BCAI_MODEL_ID, bcaiProvider } from "../src/providers/bcai";
 import { openWorkspace } from "../src/workspace";
 
 const temporaryDirectories: string[] = [];
@@ -55,7 +55,7 @@ describe("Smith agent adapter", () => {
 
     try {
       const session = SmithAgentSession.create({ workspace });
-      expect(session.contextUsage.contextWindow).toBeGreaterThan(0);
+      expect(session.contextUsage.contextWindow).toBe(BCAI_CONTEXT_WINDOW);
       expect(session.contextUsage.tokens).toBe(0);
       expect(session.contextUsage.estimated).toBe(false);
     } finally {
@@ -111,13 +111,16 @@ describe("Smith agent adapter", () => {
     expect(mapPiEvent(event)).toEqual([{ type: "error", message: "provider failed" }]);
   });
 
-  test("configures BCAI with GPT-5.6 Luna and the proxy URL", () => {
-    const model = bcaiProvider().getModels()[0];
+  test("configures BCAI GPT-5.6 models with the proxy URL and correct context window", () => {
+    const models = bcaiProvider().getModels();
 
-    expect(model.id).toBe(BCAI_MODEL_ID);
-    expect(model.provider).toBe("bcai");
-    expect(model.baseUrl).toBe(BCAI_API_URL);
-    expect(model.api).toBe("openai-responses");
+    expect(models.map((model) => model.id)).toEqual(["gpt-5.6-sol", "gpt-5.6-terra", BCAI_MODEL_ID]);
+    for (const model of models) {
+      expect(model.provider).toBe("bcai");
+      expect(model.baseUrl).toBe(BCAI_API_URL);
+      expect(model.api).toBe("openai-responses");
+      expect(model.contextWindow).toBe(BCAI_CONTEXT_WINDOW);
+    }
   });
 
   test("uses the BCAI environment key and GPT-5.6 Luna by default", async () => {

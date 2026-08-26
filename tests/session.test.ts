@@ -33,6 +33,23 @@ describe("session store", () => {
     await expect(store.latest()).resolves.toMatchObject({ id: record.id });
   });
 
+  test("opens a separate session when the latest one is active in another instance", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "smith-session-lock-"));
+    temporaryDirectories.push(directory);
+    const workspace = await openWorkspace(directory);
+    const firstStore = new SessionStore(workspace);
+    const secondStore = new SessionStore(workspace);
+
+    const first = await firstStore.openLatestOrCreate("test-model");
+    const second = await secondStore.openLatestOrCreate("test-model");
+
+    expect(second.id).not.toBe(first.id);
+    await expect(secondStore.resume(first.id)).rejects.toThrow("Session is already open in another Smith instance");
+    await firstStore.close();
+    await expect(secondStore.resume(first.id)).resolves.toMatchObject({ id: first.id });
+    await secondStore.close();
+  });
+
   test("renames an existing session and rejects an empty title", async () => {
     const directory = await mkdtemp(join(tmpdir(), "smith-session-rename-"));
     temporaryDirectories.push(directory);

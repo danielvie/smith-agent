@@ -1,10 +1,6 @@
-// PROTOTYPE harness. Throwaway.
-//
-// Serves the REAL src/web/index.html (so the real client.tsx and styles.css render)
-// against a scripted /events stream. No agent, no model call, no API key. Used to check
-// the promoted layout in every state the handoff brief lists.
-import index from "../index.html";
-import type { ApprovalState, UiEvent, UiStateEvent } from "../../protocol";
+// Development harness for the real browser UI. No agent, model call, API key, or persistence.
+import index from "../src/web/index.html";
+import type { ApprovalState, UiEvent, UiStateEvent } from "../src/protocol";
 
 const port = Number(process.env.SMITH_VERIFY_PORT ?? 3212);
 const workspace = "C:\\SANDBOX\\REPOS\\smith-agent";
@@ -24,8 +20,8 @@ function state(over: Partial<UiStateEvent> = {}): UiStateEvent {
     model: "claude-opus-5",
     configPath: "smith.config.json",
     running: false,
-    sessionId: "prototype-session",
-    sessions: [{ id: "prototype-session", title: "Context meter smoke test", modelId: "claude-opus-5", createdAt: 1, updatedAt: 1, messageCount: 8 }],
+    sessionId: "verify-session",
+    sessions: [{ id: "verify-session", title: "Context meter smoke test", modelId: "claude-opus-5", createdAt: 1, updatedAt: 1, messageCount: 8 }],
     history: [],
     approvals: [],
     queuedPrompts: [],
@@ -61,6 +57,7 @@ function script(): Array<{ after: number; event: UiEvent }> {
 
   push({ type: "prompt_start", promptId: `${run}-p1`, message: "Where does the approval flow block, and is the queue drained in order?" });
   push(state({ running: true }));
+  push({ type: "thinking_delta", delta: "Trace the approval promise, then verify queue ownership and finalization order." });
   push({ type: "tool_start", toolCallId: `${run}-t1`, toolName: "read_file", args: { path: "src/approval.ts" } });
   push({ type: "tool_end", toolCallId: `${run}-t1`, toolName: "read_file", result: "94 lines read", isError: false });
   push({ type: "tool_start", toolCallId: `${run}-t2`, toolName: "grep", args: { pattern: "queuedPrompts", path: "src" } });
@@ -135,4 +132,4 @@ const server = Bun.serve({
   },
 });
 
-console.log(`Promoted layout, scripted run: http://127.0.0.1:${server.port}/`);
+console.log(`Smith UI verification: http://127.0.0.1:${server.port}/`);

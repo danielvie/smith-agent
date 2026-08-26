@@ -26,12 +26,6 @@ tasks:
     cmds:
       - pnpm run ui
 
-  ui:prototype:
-    desc: Start the throwaway layout prototype (variants A-R, fixture data)
-    interactive: true
-    cmds:
-      - pnpm run ui:prototype
-
   ui:verify:
     desc: Render the real UI against a scripted event stream (no agent, no API key)
     interactive: true
