@@ -24,8 +24,9 @@ const [actual, expected] = await Promise.all([
 
 await rm(outputDirectory, { recursive: true, force: true });
 
-if (actual !== expected) {
-  throw new Error("Generated Tailwind CSS is stale. Run `bun run ui:css` and commit src/web/styles.generated.css.");
+const normalizeLineEndings = (source: string) => source.replaceAll("\r\n", "\n");
+if (normalizeLineEndings(actual) !== normalizeLineEndings(expected)) {
+  throw new Error("Generated Tailwind CSS is stale. Run `pnpm run ui:css` and commit src/web/styles.generated.css.");
 }
 
 for (const utility of [".text-accent", ".max-w-measure", ".grid-rows-"]) {
