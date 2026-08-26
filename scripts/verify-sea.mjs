@@ -7,7 +7,7 @@ if (process.platform !== "win32") throw new Error("The Windows SEA check must ru
 
 const workspace = await mkdtemp(join(tmpdir(), "smith-sea-"));
 const executable = resolve("dist/smith-windows-x64.exe");
-const child = spawn(executable, ["--ui", "--no-open", "--port", "0", "--workspace", workspace], {
+const child = spawn(executable, ["--no-open", "--no-auto-skills", "--port", "0", "--workspace", workspace], {
   env: { ...process.env, UDAL_PAT: process.env.UDAL_PAT || "sea-smoke-test" },
   stdio: ["ignore", "pipe", "pipe"],
   windowsHide: true,

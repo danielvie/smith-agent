@@ -13,16 +13,28 @@ tasks:
       - npm ci
 
   run:
-    desc: Run the Smith Agent CLI from source
+    desc: Run the Smith Agent CLI in the current directory
     interactive: true
     cmds:
-      - npm run run
+      - pnpm run run
+
+  run:exe:
+    desc: Run the Windows standalone executable
+    interactive: true
+    cmds:
+      - ./dist/smith-windows-x64.exe
 
   ui:
     desc: Start the local browser UI from source
     interactive: true
     cmds:
       - npm run ui
+
+  tui:
+    desc: Start the terminal interface from source
+    interactive: true
+    cmds:
+      - npm run tui
 
   ui:verify:
     desc: Render the real UI against a scripted event stream without a model call

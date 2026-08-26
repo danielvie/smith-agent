@@ -1,0 +1,7 @@
+- select model
+- select reasoning effort
+- install helper (config env keys)
+- config font size
+- add protection for destructive actions
+- implement `actions` (where the user can config custom prompts to run)
+- implement custom `stearing` and `skills` in the `~/.mado-agent` folder

@@ -9,8 +9,9 @@
   "type": "module",
   "description": "Windows-first POC for a local assistant agent",
   "scripts": {
-    "run": "tsx src/cli.ts",
-    "ui": "npm run ui:build && tsx src/cli.ts --ui",
+    "run": "npm run ui:build && tsx src/cli.ts --no-auto-skills",
+    "ui": "npm run ui:build && tsx src/cli.ts --no-auto-skills",
+    "tui": "tsx src/cli.ts --tui --no-auto-skills",
     "test": "npm run ui:build && vitest run",
     "check": "tsc --noEmit",
     "build:windows": "npm run ui:build && node scripts/build-sea.mjs && npm run test:sea",

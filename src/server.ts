@@ -99,6 +99,7 @@ export interface UiServerOptions {
   sessionId?: string;
   newSession?: boolean;
   port?: number;
+  disableAutomaticSkillDetection?: boolean;
 }
 
 export interface UiServerHandle {
@@ -249,6 +250,7 @@ export async function startUiServer(options: UiServerOptions = {}): Promise<UiSe
     approve: approvals.request,
     extraTools: chromeMcp?.tools,
     protectedToolKinds: chromeMcp?.protectedToolKinds,
+    disableAutomaticSkillDetection: options.disableAutomaticSkillDetection,
     onMessagesChange: async (messages) => {
       record.messages = messages;
       await sessionStore.save(record);

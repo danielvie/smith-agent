@@ -54,9 +54,17 @@ MCP servers live in `mcp.json` at the workspace root:
 
 Use `--config <relative-path>` or `--mcp-config <relative-path>` to select another config file. `SMITH_MODEL` overrides the model for one session. Keep `UDAL_PAT` and Fireworks keys in the environment, not in a config file.
 
-## Personal instructions and NIMT
+## Personal instructions and bundled skills
 
-Smith loads `~/.agents/AGENTS.md` into each new agent session. For NIMT work items, test artifacts, or the meetings log, it exposes a `load_skill` tool that loads `~/.agents/skills/nimt-project/SKILL.md` only when needed. The skill's helper-script directory is returned with its instructions.
+Smith loads `~/.agents/AGENTS.md` into each new agent session. Smith-owned skills live under `skills/`; the build embeds every file in that directory into the executable. The agent receives each skill's frontmatter name and description and calls `load_skill` only when a request matches. In the SEA, loading a skill materializes its files under the system temporary directory so relative helper-script paths remain usable.
+
+Use `--no-auto-skills` to register only bundled skills and ignore skills under `~/.agents/skills`. The standard `npm run run` and `npm run ui` commands enable this mode by default. Omit the flag when invoking the executable directly if user-level skill discovery is wanted.
+
+The bundled `nimt-project` skill covers NIMT work items, test artifacts, and the meetings log.
+
+## Bundled steering
+
+Put shared agent instructions in the repository's `stearing/` folder. Smith reads every UTF-8 file recursively in relative-path order and applies the combined text to every new agent session. The SEA build embeds the same files, so the executable does not depend on the source folder at runtime. The spelling `stearing` is intentional.
 
 The current slice includes real workspace automation through `list_files`, `read_file`, `search`, `write_file`, `edit_file`, and approved `run_command` tools, plus optional Chrome DevTools MCP tools for web research and browser interaction. Reads and local search stay inside the canonical workspace root. Writes, edits, shell commands, and browser actions ask for approval.
 
@@ -78,11 +86,11 @@ The rule applies to every future call of that tool in the current workspace. Rem
 
 Smith stores resumable sessions under `.smith/sessions/`. It resumes the most recently updated session by default; if that session is open in another Smith instance, it starts a new session instead. Session files contain the model transcript and UI history, and `.smith/` is ignored by Git because conversations can contain sensitive data.
 
-The UI has a session picker plus New and Delete buttons. Delete confirms before removing the active session and creates a replacement when the last session is removed. In the CLI:
+The UI has a session picker plus New and Delete buttons. Delete confirms before removing the active session and creates a replacement when the last session is removed. In the terminal interface:
 
 ```powershell
-npm run run -- --new-session
-npm run run -- --session <session-id>
+npm run tui -- --new-session
+npm run tui -- --session <session-id>
 ```
 
 While running the CLI, use `/sessions`, `/new`, or `/resume <session-id>` to switch sessions. Switching is disabled while a run is active.
@@ -93,11 +101,13 @@ Use `Edit` on a sent message to branch from that point. Smith removes that promp
 
 ## Browser UI
 
-Start the local browser client with:
+The browser UI is the default application mode:
 
 ```powershell
-task ui
+task run
 ```
+
+`task ui` is an explicit alias for the same mode.
 
 Or run it without opening a browser automatically:
 
@@ -113,6 +123,15 @@ The UI binds to `127.0.0.1`, streams events with SSE, queues prompts sent during
 ```
 ````
 
+## Terminal interface
+
+Use `--tui` to run without the browser UI:
+
+```powershell
+npm run tui -- --workspace C:\path\to\project
+.\dist\smith-windows-x64.exe --tui --no-auto-skills --workspace C:\path\to\project
+```
+
 ## Windows single executable
 
 Build the Node SEA with the required Node version:
@@ -126,7 +145,7 @@ The output is `dist/smith-windows-x64.exe`. The executable contains the Node run
 
 ```powershell
 $env:UDAL_PAT = "<your BCAI UDAL token>"
-.\dist\smith-windows-x64.exe --ui --workspace C:\path\to\project
+.\dist\smith-windows-x64.exe --no-auto-skills --workspace C:\path\to\project
 ```
 
 Build each operating-system artifact on that operating system. Sign the final executable after SEA injection if it will be distributed.

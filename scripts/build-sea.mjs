@@ -1,5 +1,6 @@
-import { copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
+import { join, relative } from "node:path";
 import { build } from "esbuild";
 import postject from "postject";
 
@@ -16,6 +17,15 @@ const bundlePath = `${seaDirectory}/smith.cjs`;
 const blobPath = `${seaDirectory}/smith.blob`;
 const configPath = `${seaDirectory}/sea-config.json`;
 const executablePath = "dist/smith-windows-x64.exe";
+
+async function assetFiles(root, directory = root, files = []) {
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) await assetFiles(root, path, files);
+    else if (entry.isFile()) files.push(relative(process.cwd(), path).replaceAll("\\", "/"));
+  }
+  return files;
+}
 
 await rm(seaDirectory, { recursive: true, force: true });
 await rm(executablePath, { force: true });
@@ -36,6 +46,8 @@ await build({
   },
 });
 
+const embeddedFiles = await Promise.all([assetFiles("skills"), assetFiles("stearing")]);
+const embeddedAssets = Object.fromEntries(embeddedFiles.flat().map((path) => [path, path]));
 await writeFile(configPath, `${JSON.stringify({
   main: bundlePath,
   output: blobPath,
@@ -46,6 +58,7 @@ await writeFile(configPath, `${JSON.stringify({
     "ui/index.html": "dist/ui/index.html",
     "ui/client.js": "dist/ui/client.js",
     "ui/client.css": "dist/ui/client.css",
+    ...embeddedAssets,
   },
 }, null, 2)}\n`);
 

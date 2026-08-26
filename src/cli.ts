@@ -19,8 +19,9 @@ interface CliOptions {
   sessionId: string | undefined;
   newSession: boolean;
   port: number | undefined;
-  ui: boolean;
+  tui: boolean;
   openBrowser: boolean;
+  disableAutomaticSkillDetection: boolean;
   help: boolean;
 }
 
@@ -31,8 +32,10 @@ function parseArgs(argv: string[]): CliOptions {
   let sessionId: string | undefined;
   let newSession = false;
   let port: number | undefined;
-  let ui = false;
+  let tui = false;
+  let explicitUi = false;
   let openBrowser = true;
+  let disableAutomaticSkillDetection = false;
   let help = false;
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -42,11 +45,19 @@ function parseArgs(argv: string[]): CliOptions {
       continue;
     }
     if (argument === "--ui") {
-      ui = true;
+      explicitUi = true;
+      continue;
+    }
+    if (argument === "--tui") {
+      tui = true;
       continue;
     }
     if (argument === "--no-open") {
       openBrowser = false;
+      continue;
+    }
+    if (argument === "--no-auto-skills") {
+      disableAutomaticSkillDetection = true;
       continue;
     }
 
@@ -94,11 +105,12 @@ function parseArgs(argv: string[]): CliOptions {
   }
 
   if (sessionId && newSession) throw new Error("--session and --new-session cannot be used together.");
-  return { workspacePath, configPath, mcpConfigPath, sessionId, newSession, port, ui, openBrowser, help };
+  if (tui && explicitUi) throw new Error("--tui and --ui cannot be used together.");
+  return { workspacePath, configPath, mcpConfigPath, sessionId, newSession, port, tui, openBrowser, disableAutomaticSkillDetection, help };
 }
 
 function printHelp(): void {
-  output.write(`Smith Agent\n\nUsage:\n  smith [--workspace <path>] [--config <relative-path>] [--mcp-config <relative-path>] [--session <id>] [--new-session]\n  smith --ui [--workspace <path>] [--config <relative-path>] [--mcp-config <relative-path>] [--session <id>] [--new-session] [--port <number>]\n\nOptions:\n  --ui                  Start the browser UI\n  --no-open             Do not open the browser automatically\n  --port                UI port, default 3210 (use 0 for an ephemeral port)\n  --config              Smith config path, default smith.config.json\n  --mcp-config          MCP config path, default mcp.json\n  --session             Resume a session by id\n  --new-session         Start a new session instead of resuming the latest\n\nCommands:\n  /help                 Show this help\n  /sessions             List saved sessions\n  /resume <id>          Resume a saved session\n  /new                  Start a new session\n  /steer <message>      Queue guidance for the active run\n  /abort                Stop the active run\n  /exit                 Quit\n\nThe current directory is the workspace unless --workspace is supplied.\nConfig defaults to smith.config.json and mcp.json in that workspace.\n\nEnvironment:\n  UDAL_PAT              BCAI UDAL token\n  API_KEY_FIREWORKS     Fireworks API key\n  FIREWORKS_API_KEY     Fireworks API key fallback\n  SMITH_MODEL           Override the configured model\n`);
+  output.write(`Smith Agent\n\nUsage:\n  smith [--workspace <path>] [--config <relative-path>] [--mcp-config <relative-path>] [--session <id>] [--new-session] [--port <number>] [--no-open] [--no-auto-skills]\n  smith --tui [--workspace <path>] [--config <relative-path>] [--mcp-config <relative-path>] [--session <id>] [--new-session] [--no-auto-skills]\n\nOptions:\n  --tui                 Start the terminal interface instead of the browser UI\n  --ui                  Start the browser UI explicitly (compatibility alias)\n  --no-open             Do not open the browser automatically\n  --no-auto-skills      Register bundled skills only\n  --port                UI port, default 3210 (use 0 for an ephemeral port)\n  --config              Smith config path, default smith.config.json\n  --mcp-config          MCP config path, default mcp.json\n  --session             Resume a session by id\n  --new-session         Start a new session instead of resuming the latest\n\nCommands:\n  /help                 Show this help\n  /sessions             List saved sessions\n  /resume <id>          Resume a saved session\n  /new                  Start a new session\n  /steer <message>      Queue guidance for the active run\n  /abort                Stop the active run\n  /exit                 Quit\n\nThe current directory is the workspace unless --workspace is supplied.\nConfig defaults to smith.config.json and mcp.json in that workspace.\n\nEnvironment:\n  UDAL_PAT              BCAI UDAL token\n  API_KEY_FIREWORKS     Fireworks API key\n  FIREWORKS_API_KEY     Fireworks API key fallback\n  SMITH_MODEL           Override the configured model\n`);
 }
 
 function approvalSummary(request: ApprovalRequest): string {
@@ -133,7 +145,7 @@ function openBrowser(url: string): void {
 
 async function runUi(options: CliOptions): Promise<void> {
   const { startUiServer } = await import("./server");
-  const handle = await startUiServer({ workspacePath: options.workspacePath, configPath: options.configPath, mcpConfigPath: options.mcpConfigPath, sessionId: options.sessionId, newSession: options.newSession, port: options.port });
+  const handle = await startUiServer({ workspacePath: options.workspacePath, configPath: options.configPath, mcpConfigPath: options.mcpConfigPath, sessionId: options.sessionId, newSession: options.newSession, port: options.port, disableAutomaticSkillDetection: options.disableAutomaticSkillDetection });
   output.write(`Smith UI: ${handle.url}\n`);
   output.write(`Smith workspace: ${handle.workspace.root}\n`);
   output.write(`Smith model: ${handle.session.modelId}\n`);
@@ -156,7 +168,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     printHelp();
     return;
   }
-  if (options.ui) {
+  if (!options.tui) {
     await runUi(options);
     return;
   }
@@ -194,6 +206,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       approve: (request) => askForApproval(request, rl, approvalPolicy),
       extraTools: chromeMcp?.tools,
       protectedToolKinds: chromeMcp?.protectedToolKinds,
+      disableAutomaticSkillDetection: options.disableAutomaticSkillDetection,
       onMessagesChange: async (messages) => {
         record.messages = messages;
         await sessionStore.save(record);

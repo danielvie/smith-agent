@@ -4,8 +4,10 @@ import { createModels, Type, type AssistantMessage, type ImageContent, type Stat
 import { fireworksProvider } from "@earendil-works/pi-ai/providers/fireworks";
 import type { BeforeToolCallContext } from "@earendil-works/pi-agent-core";
 import { BCAI_API_KEY_ENV, BCAI_MODEL_ID, BCAI_PROVIDER_ID, bcaiProvider } from "./providers/bcai";
-import { NIMT_PROJECT_SKILL_NAME, loadGlobalAgentInstructions, loadNimtProjectSkill } from "./instructions";
+import { loadGlobalAgentInstructions } from "./instructions";
 import type { ApprovalHandler, ApprovalKind, ApprovalRequest, ContextUsage, SmithEvent } from "./protocol";
+import { loadRegisteredSkill, loadSkillCatalog, type LoadedSkill, type RegisteredSkill } from "./skills";
+import { loadStearingInstructions } from "./stearing";
 import { DEFAULT_MAX_SEARCH_MATCHES, MAX_COMMAND_TIMEOUT_MS, type SearchResult, type Workspace, type WorkspaceEntry } from "./workspace";
 
 export type { ApprovalHandler, ApprovalRequest, SmithEvent } from "./protocol";
@@ -78,24 +80,35 @@ function toolResult<T extends object>(details: T): AgentToolResult<T> {
 }
 
 const loadSkillParameters = Type.Object({
-  name: Type.Literal(NIMT_PROJECT_SKILL_NAME),
+  name: Type.String({ description: "Exact name of an available skill." }),
 });
 type LoadSkillParameters = Static<typeof loadSkillParameters>;
 
-export function createInstructionTools(): AgentTool[] {
-  const loadSkillTool: AgentTool<typeof loadSkillParameters, { name: string; directory?: string; instructions?: string; commands?: { ado: string; meetingsLog: string }; error?: string }> = {
+type LoadSkillResult = LoadedSkill | { name: string; error: string };
+
+export function createInstructionTools(skills: RegisteredSkill[]): AgentTool[] {
+  if (skills.length === 0) return [];
+  const byName = new Map(skills.map((skill) => [skill.name, skill]));
+  const summary = skills.map((skill) => `${skill.name}: ${skill.description}`).join("\n");
+  const loadSkillTool: AgentTool<typeof loadSkillParameters, LoadSkillResult> = {
     name: "load_skill",
     label: "Load skill",
-    description: "Load the NIMT project instructions when the request concerns NIMT work items, test artifacts, or the meetings log.",
+    description: `Load one available skill before following its instructions.\n${summary}`,
     parameters: loadSkillParameters,
     async execute(_toolCallId, params: LoadSkillParameters) {
-      const skill = loadNimtProjectSkill();
+      const skill = byName.get(params.name);
       if (!skill) return toolResult({ name: params.name, error: `Skill not found: ${params.name}.` });
-      return toolResult({ name: params.name, directory: skill.directory, instructions: skill.instructions, commands: skill.commands });
+      return toolResult(await loadRegisteredSkill(skill));
     },
   };
 
   return [loadSkillTool];
+}
+
+export function skillIdentificationPrompt(skills: RegisteredSkill[]): string | undefined {
+  if (skills.length === 0) return undefined;
+  const available = skills.map((skill) => `- ${skill.name}: ${skill.description}`).join("\n");
+  return `Available skills:\n${available}\nWhen a request matches a skill, call load_skill with its exact name before acting. Resolve relative paths in the returned instructions against the returned skill directory.`;
 }
 
 function normalizeEntries(entries: WorkspaceEntry[]): WorkspaceEntry[] {
@@ -247,6 +260,8 @@ export interface SmithAgentOptions {
   approve?: ApprovalHandler;
   extraTools?: AgentTool[];
   protectedToolKinds?: ReadonlyMap<string, ApprovalKind>;
+  disableAutomaticSkillDetection?: boolean;
+  skills?: RegisteredSkill[];
   sessionId?: string;
   messages?: AgentMessage[];
   onMessagesChange?: (messages: AgentMessage[]) => Promise<void> | void;
@@ -296,7 +311,10 @@ export class SmithAgentSession {
     }
 
     const globalAgentInstructions = loadGlobalAgentInstructions();
-    const tools = [...createWorkspaceTools(options.workspace), ...createInstructionTools(), ...(options.extraTools ?? [])];
+    const stearingInstructions = loadStearingInstructions();
+    const skills = options.skills ?? loadSkillCatalog({ disableAutomaticDetection: options.disableAutomaticSkillDetection });
+    const skillPrompt = skillIdentificationPrompt(skills);
+    const tools = [...createWorkspaceTools(options.workspace), ...createInstructionTools(skills), ...(options.extraTools ?? [])];
     const protectedToolKinds = new Map(PROTECTED_TOOLS);
     for (const [toolName, kind] of options.protectedToolKinds ?? []) protectedToolKinds.set(toolName, kind);
     const approve = options.approve ?? (async () => "deny" as const);
@@ -308,9 +326,10 @@ export class SmithAgentSession {
           "Use the workspace tools instead of inventing file contents or command output.",
           "Use search when locating code or text. When Chrome DevTools tools are available, use the chrome_ tools for web searches and interactive or login-dependent browsing. If no browser tools are available, say so instead of claiming to browse.",
           "File paths passed to workspace file tools must be relative to the workspace root.",
-          `Use the ${NIMT_PROJECT_SKILL_NAME} skill for NIMT work items, test artifacts, or the meetings log. Call load_skill before acting on those requests. When the skill references a relative path, resolve it against the returned skill directory and use that absolute path in run_command. The returned command prefixes are ready to use.`,
+          ...(skillPrompt ? [skillPrompt] : []),
           "Explain what you changed and report command results accurately.",
           "Use Markdown and LaTeX when they improve the answer. In browser mode, use fenced chart blocks with JSON ECharts options when a chart helps.",
+          ...(stearingInstructions ? [`\nBundled steering instructions:\n${stearingInstructions}`] : []),
           ...(globalAgentInstructions ? [`\nPersonal agent instructions:\n${globalAgentInstructions}`] : []),
         ].join("\n"),
         model,

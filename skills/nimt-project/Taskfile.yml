@@ -1,0 +1,28 @@
+version: '3'
+
+silent: true
+
+tasks:
+  default:
+    desc: List available tasks
+    cmds:
+      - task --list
+
+  run:
+    desc: Check the live Azure DevOps and Meetings log connections
+    cmds:
+      - node scripts/ado.mjs check
+      - uv run scripts/meetings_log.py check
+
+  test:
+    desc: Run syntax checks and local self-tests
+    cmds:
+      - node --check scripts/ado.mjs
+      - node scripts/ado.mjs self-test
+      - uv run scripts/meetings_log.py self-test
+      - uv run scripts/test_meetings_log.py
+
+  clean:
+    desc: Remove generated Python cache directories
+    cmds:
+      - uv run python -c "from pathlib import Path; import shutil; [shutil.rmtree(path) for path in Path('.').rglob('__pycache__') if path.exists()]"
