@@ -7,6 +7,9 @@ import type { ApprovalDecision, ApprovalState, PromptImage, QueuedPrompt, SmithE
 type Density = "read" | "digest";
 
 const DENSITY_STORAGE_KEY = "smith.transcript-density";
+const MESSAGE_PANE_HEIGHT_STORAGE_KEY = "smith.message-pane-height";
+const DEFAULT_MESSAGE_PANE_HEIGHT = 76;
+const MIN_MESSAGE_PANE_HEIGHT = 70;
 const MAX_SCREENSHOTS = 4;
 const MAX_SCREENSHOT_BYTES = 5 * 1024 * 1024;
 const SCREENSHOT_MIME_TYPES = new Set<PromptImage["mimeType"]>(["image/png", "image/jpeg", "image/webp"]);
@@ -97,6 +100,23 @@ function storedDensity(): Density {
     return value === "digest" || value === "read" ? value : "read";
   } catch {
     return "read";
+  }
+}
+
+function storedMessagePaneHeight(): number {
+  try {
+    const height = Number(localStorage.getItem(MESSAGE_PANE_HEIGHT_STORAGE_KEY));
+    return Number.isFinite(height) && height >= MIN_MESSAGE_PANE_HEIGHT ? height : DEFAULT_MESSAGE_PANE_HEIGHT;
+  } catch {
+    return DEFAULT_MESSAGE_PANE_HEIGHT;
+  }
+}
+
+function storeMessagePaneHeight(height: number): void {
+  try {
+    localStorage.setItem(MESSAGE_PANE_HEIGHT_STORAGE_KEY, String(Math.round(height)));
+  } catch {
+    // Browsers can disable storage; resizing still works for the current page.
   }
 }
 
@@ -734,6 +754,7 @@ function App() {
   const [attachments, setAttachments] = useState<DraftImage[]>([]);
   const queuedDrafts = useRef(new Map<string, { draft: string; attachments: DraftImage[] }>());
   const [density, setDensity] = useState<Density>(storedDensity);
+  const [initialMessagePaneHeight] = useState(storedMessagePaneHeight);
   const [state, setState] = useState<UiStateEvent>({
     type: "state",
     workspace: "loading",
@@ -1045,7 +1066,15 @@ function App() {
           aria-label="Resize message bar"
           className="relative h-px bg-line outline-none before:absolute before:inset-x-0 before:-inset-y-2 hover:bg-accent focus-visible:bg-accent data-[separator=active]:bg-accent"
         />
-        <Panel id="composer" defaultSize="76px" minSize="70px" groupResizeBehavior="preserve-pixel-size">
+        <Panel
+          id="composer"
+          defaultSize={initialMessagePaneHeight}
+          minSize={MIN_MESSAGE_PANE_HEIGHT}
+          groupResizeBehavior="preserve-pixel-size"
+          onResize={(size, _id, previousSize) => {
+            if (previousSize) storeMessagePaneHeight(size.inPixels);
+          }}
+        >
           <Composer
             draft={draft}
             setDraft={setDraft}
